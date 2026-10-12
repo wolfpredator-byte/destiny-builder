@@ -1,6 +1,6 @@
 # DESTINY BUILDER — MEMORIA DEL PROGETTO, ROADMAP E REGISTRO DECISIONI
 
-> **Versione:** 1.2 — 12 ottobre 2026  
+> **Versione:** 1.5 — 12 ottobre 2026  
 > **Ambito:** Destiny Builder / Destiny Build Assistant (non JARVIS/Ghost)  
 > **Scopo:** documento di continuità da conservare nel repository e riutilizzare nelle nuove chat con ChatGPT e nei task Devin.  
 > **Stato del documento:** ricostruzione basata su conversazioni, resoconti, codice e test condivisi. **Non è un audit completo del repository corrente**. Prima di cambiare codice, verificare i file reali sul PC.  
@@ -12,11 +12,12 @@
 
 **Priorità assoluta:** non perdere il lavoro esistente, non deviare dalla roadmap e non attribuire a un test TypeScript la stessa forza di un test reale dell'app.
 
-**Ultimo checkpoint verificato al 12/10/2026:** `8R.6.3C5E1c — Targeted Exotic Replacement Detail Loading`.
+**Ultimo checkpoint verificato al 12/10/2026:** `MF-A1b — Inventory Route Cache Coordination` (browser verificato dall’utente; typecheck dichiarato da Devin per la prima implementazione; la successiva variante revisionata è confermata funzionante dall’utente).
 
 - **C5E1/C5E1a/C5E1b/C5E1c:** diagnostica, correzione filtri, audit cache e caricamento dettagli mirato completati secondo Devin. **Test nel browser del 12/10:** su Crown of Tempests, 25 elmi alternativi → 6 eleggibili → 4 non esotici confermati → **4 con dettagli verificati** → **4 fully qualified**. Prima del caricamento erano **0/4**. Questo conferma l'integrazione Bungie/cache/contesto per quel test reale, **non** la validazione completa di una nuova ipotesi AI.
 - **Confermato dall’utente:** `npx tsc --noEmit` passa **anche dopo C5E1c**. La C5E1c è chiusa per implementazione, typecheck e test funzionale browser dei 4 sostituti. **Non ancora verificati:** persistenza dei 4 dettagli dopo refresh/reingresso, gestione errori/cambio Guardian su Bungie live ed eventuale preflight completo con Contraverse Hold. Non effettuare chiamate OpenAI a pagamento solo per chiudere questo checkpoint.
-- **Ora:** `Manifest Foundation` — audit tecnico dell'uso già presente del Bungie Manifest, scelta fra database locale indicizzato/server e manifest attuale, versioni, cache, performance, senza implementazione massiva non approvata.
+- **MF-A / MF-A1a / MF-A1b concluse:** audit dell’accesso alle definizioni statiche; `manifest.ts` version-aware con caching centralizzato; route inventory senza Promise cache globali duplicate e con generiche request-scoped. Dopo revisione del retry nella route, l’utente ha confermato «funziona tutto».
+- **Ora:** `MF-B0 — Italian Manifest Catalog Decision Sprint`: valutare con evidenze (manifest metadata, dimensioni e compatibilità) il caricamento locale del Manifest Bungie ufficiale in italiano; nessuna modifica massiva approvata.
 - **In parallelo:** progettazione della **UI v2 leggibile** (read-only build equipaggiata, quattro moduli, Full Build AI separato). La progettazione non autorizza una riscrittura big-bang.
 - **Non fare ora:** Acquisition Planner, Power Progression, enciclopedia/lore, Bungie equip writes.
 
@@ -358,3 +359,74 @@ NEXT TASK — ID + file + obiettivo + accettazione:
 4. A fine sessione aggiornare il registro, la fase corrente e il quick-handoff. **Nessuna chat da sola aggiorna automaticamente i file locali**.
 
 **Fine — versione 1.2.**
+
+
+---
+
+## 14. MF-A — Manifest Foundation, audit read-only (12/10/2026 · v1.3)
+
+**Stato:** audit concluso da Devin, basato su lettura dei file nel repository. Nessuna modifica al codice eseguita durante MF-A. Non confondere con una integrazione del Manifest completo già realizzata.
+
+### Architettura osservata nell'audit
+
+- `src/lib/bungie/manifest.ts`: `getManifestDefinition`, `getInventoryItemDefinition`, cache memoria per definizione (TTL indicato: 12 ore), cache su disco temporaneo `destiny-builder-manifest-cache/{definitionType}/{hash}.json`, fallback API Bungie per hash.
+- `src/lib/bungie/stats.ts` e `src/lib/bungie/plugSets.ts`: accessor delle definizioni rispettive.
+- `src/app/api/destiny/characters/[characterId]/inventory/route.ts`: consumatore pesante per Item, Stat, PlugSet, SandboxPerk, EquipableItemSet; cache addizionali in-process specifiche della route; altre route consumer: transfer/vault/item.
+- Catalogo statico (nomi, descrizioni, icone, definizioni) separato da dati account/istanza (roll, statistiche reali, stato equipaggiato, sblocchi, posizione).
+- L'audit segnala assenza di invalidazione centralizzata basata sulla revisione del Manifest, duplicazione di cache non coordinate e assenza di indice globale per nome/categoria.
+- I tempi API/performance reali, le dimensioni del database e la causa di ogni colpo alla rete NON sono stati misurati in questo audit: non presentare i colli di bottiglia come benchmark dimostrati.
+
+### Correzioni di progetto dopo review
+
+1. `GetDestinyManifest` espone `Response.version` per identificare la revisione. `jsonWorldContentPaths.en` è un percorso di file, non il campo semantico primario «version»; il percorso può essere usato solo come fingerprint/fallback motivato.
+2. Bungie distribuisce il Manifest già localizzato, incluso **italiano (`it`)**. Il limite dell'app attuale è l'utilizzo in inglese, non l'assenza di localizzazione Bungie. Nessuna traduzione comunitaria necessaria per i nomi ufficiali nel catalogo italiano.
+3. Le cache memoria, disco e route non sono intrinsecamente sbagliate, ma vanno coordinate. Non cancellare dati account/istanze quando cambia il Manifest statico.
+4. Non eseguire la chiamata «controlla versione» in rete per ogni lookup/hash: memoria con TTL e single-flight, gestione errori e fallback.
+5. Il database SQLite è da valutare successivamente: FTS5 è per ricerca testuale, **non una tecnica di compressione**; il pacchetto `.content` Bungie è un archivio compresso dello snapshot SQLite. L'aggiornamento con nuova versione è normalmente uno snapshot nuovo, non un delta incrementale gratuito.
+
+### Sequenza approvata per implementazione progressiva
+
+- **MF-A1a — PIANO STORICO, ORA COMPLETATO:** intervenire soltanto su `src/lib/bungie/manifest.ts`; leggere il file reale prima di editare, integrare discovery `Response.version` con refresh limitato (~1h configurazione interna), single-flight, fallback sicuro se il controllo fallisce, cache statiche isolate per versione e protezione da race delle richieste vecchie. Non introdurre route/API pubblica, SQLite, dipendenze o fetch massivi. Eseguire TypeScript e test sintetici. Non dichiarare finita l'invalidazione complessiva prima di MF-A1b.
+- **MF-A1b — PIANO STORICO, ORA COMPLETATO:** invalidare/versionare anche le cache in-process in `inventory/route.ts`, con modifica strettamente circoscritta e test.
+- **Manifest locale completo (fase successiva separata):** valutare poi JSON/SQLite italiano versionato per l'indice/catalogo server-side, previo benchmark di dimensioni e prestazioni. Non presumere che sostituisca dettagli istanza Bungie.
+- **UI v2 design in parallelo**, nessuna grande riscrittura ora. Acquisition Planner, Power Progression, Guide Blueberry e Lore ancora nel backlog futuro.
+
+**Checkpoint storico v1.3:** MF-A audit finito, MF-A1a ancora pendente in quel momento. Al 12/10 MF-A1a e MF-A1b risultano completate; riferirsi alla sezione 16 per lo stato corrente.
+
+
+---
+
+## 15. MF-A1a — Cache Manifest versionata (12/10/2026 · v1.4)
+
+**Stato: approvato con conferma dell'utente.** Devin ha inizialmente implementato `MF-A1a` in `src/lib/bungie/manifest.ts`, poi la code review ha evidenziato criticità in `force-cache`, doppio controllo versione con TTL, cleanup concorrente, fallback non verificato e gestione delle promesse. È stata consegnata una versione rivista di `manifest.ts`, installata dall'utente. **L'utente conferma che tutto passa**: TypeScript (`npx tsc --noEmit`) e browser Guardian/inventario. I test sintetici sulla revisione erano stati eseguiti in isolamento; non sono benchmark di produzione.
+
+**Architettura della versione rivista verificata nel sorgente:**
+- `GetDestinyManifest.Response.version` con validazione, TTL 1h, single-flight, retry breve dopo errore; fallback all'ultima versione conosciuta senza considerarla appena verificata.
+- Chiavi/file versionati per `DestinyInventoryItemDefinition`, `DestinyStatDefinition` e `DestinyPlugSetDefinition`; cache memoria 12h + file locali, e risposte HTTP delle definizioni con `no-store`.
+- Nessuna cancellazione immediata dei file delle vecchie revisioni; nessun caching di nuove definizioni sotto versioni non verificate.
+- Nessuna modifica delle istanze private Bungie.
+
+**MF-A1b — CHECKPOINT STORICO, ORA COMPLETATO:** analizzare e coordinare **solo** le cache route in `src/app/api/destiny/characters/[characterId]/inventory/route.ts`. Priorità: eliminare cache module-level indefinite di Promise, quando la cache versionata condivisa esiste già; per definizioni generiche (perk/set) usare almeno deduplicazione per richiesta e rete `no-store`, senza vecchie promesse tra richieste. Verificare prima i consumer attuali `stats.ts` e `plugSets.ts`; se il coordinamento richiede toccare `manifest.ts`, fermarsi e proporre una fase separata (una modifica per volta). Niente SQLite integrale, nuovo download Manifest, nuove API AI, cambiamenti a OAuth/inventario personale/validatori. Typecheck e test.
+
+**Fasi successive:** esplorazione catalogo italiano del Manifest / dimensioni SQLite con benchmark, progettazione UI v2 leggibile in parallelo. Acquisition Planner, Power Progression e Lore restano future.
+
+
+---
+
+## 16. MF-A1b — Coordinamento cache inventario (12/10/2026 · v1.5)
+
+**Stato: COMPLETATO — verifica funzionale confermata dall’utente dopo la revisione.** Devin ha modificato unicamente `src/app/api/destiny/characters/[characterId]/inventory/route.ts` eliminando quattro cache module-level di Promise non versionate: `inventoryDefinitionCache`, `statDefinitionCache`, `plugSetDefinitionCache`, `genericManifestDefinitionCache`. Le definizioni InventoryItem/Stat/PlugSet passano alle funzioni centrali già versionate in `manifest.ts`, usando i wrapper esistenti `stats.ts` e `plugSets.ts`. Le definizioni generiche (SandboxPerk, EquipableItemSet, Artifact e Loadout Definitions) usano `createRequestScopedDefinitionCache()` con deduplicazione per singola richiesta e rete `no-store`.
+
+**Code review effettiva:** è stata ricevuta la route aggiornata di 3021 righe, e notata la regressione dovuta alla rimozione del vecchio `withRetry` dai lookup statici centrali: la cache centrale non sostituisce il retry di errore. Una seconda versione della route, `inventory-route-MF-A1b-reviewed.ts`, ha ripristinato retry bounded per InventoryItem/Stat/PlugSet senza reintrodurre cache globali duplicate. Da ChatGPT sono stati riportati controlli sintattici e test sintetici isolati, **non** una compilazione end-to-end su Windows. Dopo l’applicazione, l’utente ha risposto: **«funziona tutto»**. Non aggiungere un’ulteriore richiesta AI a pagamento per verificare questa fase.
+
+**Test e limiti da distinguere:** per la prima implementazione Devin ha riferito `npx tsc --noEmit` superato e 6 test sintetici; per la variante revisionata ChatGPT ha riferito verifica TypeScript isolata e test retry. L’utente ha confermato il funzionamento generale in app per la variante revisionata; il risultato di `npx tsc --noEmit` *dopo* quest’ultima sostituzione non è stato esplicitato separatamente nell’ultimo messaggio. Nessun benchmark prestazionale prima/dopo, nessun test osservato di cambio versione live a metà richiesta. Le definizioni generiche non sono ancora globalmente versionate e possono essere recuperate più volte tra richieste, ma senza cache stale persistenti nella route.
+
+**Decisione di roadmap:** MF-A1b chiusa sul comportamento verificato; passare a `MF-B0 — Italian Manifest Catalog Decision Sprint`, senza estendere nuovamente la route, senza rifare la cache e senza confondere i dati delle definizioni con statistiche/roll/sbloccati dei Guardian. Registrare un commit Git di baseline con file modificati e documentazione dopo aver verificato il diff locale. UI v2 progettata parallelamente, non riscrittura immediata.
+
+### MF-B0 — Compito successivo (studio breve e verificabile, non implementazione massiva)
+
+1. Leggere `AGENTS.md`, versione attuale di `manifest.ts`, `next.config.ts`, `package.json` e deployment previsto; analizzare il formato mobile SQLite italiano Bungie e gli eventuali component JSON italiani ufficiali da `GetDestinyManifest` (`Response.version`, percorsi locali per `it`).
+2. Controllare la dimensione effettiva del pacchetto compresso e del database dopo estrazione, requisito del filesystem e modalità di aggiornamento; evitare numeri inventati e non scaricare file grandi senza autorizzazione.
+3. Confrontare tre opzioni: continuare on-demand, importare snapshot SQLite server-side versionato, generare un piccolo indice precalcolato per la UI. Scelta motivata da latenza, spazio, cold start, Windows/Next.js ed eventuale deployment serverless.
+4. Proporre un **solo** primo checkpoint tecnico delimitato (un file alla volta); nessuna nuova pagina, nessun algoritmo di build modificato, nessun download integrale prima di una decisione esplicita.
+5. UI v2 in parallelo: snapshot equipaggiamento Bungie read-only, quattro moduli (Armature, Armi, Abilità/Sottoclasse, Artefatto), Full Build AI distinto. **Leggibilità** come priorità.

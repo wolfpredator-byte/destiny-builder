@@ -10,11 +10,6 @@ import {
   getSubclassCatalog,
 } from "@/lib/bungie/subclassCatalog";
 
-const inventoryDefinitionCache = new Map<number, Promise<any>>();
-const statDefinitionCache = new Map<number, Promise<any>>();
-const plugSetDefinitionCache = new Map<number, Promise<any>>();
-const genericManifestDefinitionCache = new Map<string, Promise<any>>();
-
 const ARMOR_STAT_HASHES = [
   2996146975, // Weapons
   392767087, // Health
@@ -141,105 +136,65 @@ async function withRetry<T>(
   throw lastError;
 }
 
-function getCachedInventoryItemDefinition(
-  itemHash: number,
-  apiKey: string
-) {
-  let cached = inventoryDefinitionCache.get(itemHash);
-
-  if (!cached) {
-    cached = withRetry(() =>
-      getInventoryItemDefinition(itemHash, apiKey)
-    ).catch((error) => {
-      inventoryDefinitionCache.delete(itemHash);
-      throw error;
-    });
-
-    inventoryDefinitionCache.set(itemHash, cached);
-  }
-
-  return cached;
+// MF-A1b review: retain the route's previously bounded retry for transient
+// Manifest definition failures. The central module still owns versioned
+// memory/disk caching and in-flight deduplication; these wrappers add no cache.
+async function getInventoryItemDefinitionWithRetry(itemHash: number, apiKey: string) {
+  return withRetry(() => getInventoryItemDefinition(itemHash, apiKey));
 }
 
-function getCachedStatDefinition(
-  statHash: number,
-  apiKey: string
-) {
-  let cached = statDefinitionCache.get(statHash);
-
-  if (!cached) {
-    cached = withRetry(() =>
-      getStatDefinition(statHash, apiKey)
-    ).catch((error) => {
-      statDefinitionCache.delete(statHash);
-      throw error;
-    });
-
-    statDefinitionCache.set(statHash, cached);
-  }
-
-  return cached;
+async function getStatDefinitionWithRetry(statHash: number, apiKey: string) {
+  return withRetry(() => getStatDefinition(statHash, apiKey));
 }
 
-function getCachedPlugSetDefinition(
-  plugSetHash: number,
-  apiKey: string
-) {
-  let cached = plugSetDefinitionCache.get(plugSetHash);
-
-  if (!cached) {
-    cached = withRetry(() =>
-      getPlugSetDefinition(plugSetHash, apiKey)
-    ).catch((error) => {
-      plugSetDefinitionCache.delete(plugSetHash);
-      throw error;
-    });
-
-    plugSetDefinitionCache.set(plugSetHash, cached);
-  }
-
-  return cached;
+async function getPlugSetDefinitionWithRetry(plugSetHash: number, apiKey: string) {
+  return withRetry(() => getPlugSetDefinition(plugSetHash, apiKey));
 }
 
+// Request-scoped cache for generic Manifest definitions not yet supported
+// by the central manifest.ts module (e.g., SandboxPerk, EquipableItemSet).
+// This cache is per-request only to avoid retaining obsolete definitions
+// across Manifest version changes.
+function createRequestScopedDefinitionCache() {
+  const cache = new Map<string, Promise<any>>();
 
-function getCachedManifestDefinition(
-  entityType: string,
-  hash: number,
-  apiKey: string
-) {
-  const key = `${entityType}:${hash}`;
-  let cached = genericManifestDefinitionCache.get(key);
+  return {
+    get(entityType: string, hash: number, apiKey: string): Promise<any> {
+      const key = `${entityType}:${hash}`;
+      let cached = cache.get(key);
 
-  if (!cached) {
-    cached = withRetry(async () => {
-      const response = await fetch(
-        `https://www.bungie.net/Platform/Destiny2/Manifest/${entityType}/${hash}/`,
-        {
-          headers: {
-            "X-API-Key": apiKey,
-          },
-          cache: "force-cache",
-        }
-      );
+      if (!cached) {
+        cached = withRetry(async () => {
+          const response = await fetch(
+            `https://www.bungie.net/Platform/Destiny2/Manifest/${entityType}/${hash}/`,
+            {
+              headers: {
+                "X-API-Key": apiKey,
+              },
+              cache: "no-store",
+            }
+          );
 
-      const data = await response.json();
+          const data = await response.json();
 
-      if (!response.ok || data.ErrorCode !== 1) {
-        throw new Error(
-          `Failed to load ${entityType} definition for hash ${hash}`
-        );
+          if (!response.ok || data.ErrorCode !== 1) {
+            throw new Error(
+              `Failed to load ${entityType} definition for hash ${hash}`
+            );
+          }
+
+          return data.Response;
+        }).catch((error) => {
+          cache.delete(key);
+          throw error;
+        });
+
+        cache.set(key, cached);
       }
 
-      return data.Response;
-    }).catch((error) => {
-      genericManifestDefinitionCache.delete(key);
-      throw error;
-    });
-
-    genericManifestDefinitionCache.set(key, cached);
-  }
-
-  return cached;
+      return cached;
+    },
+  };
 }
 
 async function mapWithConcurrency<T, R>(
@@ -295,6 +250,9 @@ export async function GET(
   const cookieStore = await cookies();
   const accessToken = cookieStore.get("bungie_access_token")?.value;
   const apiKey = process.env.BUNGIE_API_KEY;
+
+  // Request-scoped cache for generic Manifest definitions
+  const genericDefinitionCache = createRequestScopedDefinitionCache();
 
   if (!accessToken) {
     return NextResponse.json(
@@ -400,7 +358,7 @@ export async function GET(
       );
     }
 
-    const definition = await getCachedInventoryItemDefinition(
+    const definition = await getInventoryItemDefinitionWithRetry(
       requestedItemHash,
       apiKey
     );
@@ -431,7 +389,7 @@ export async function GET(
         try {
           return [
             statHash,
-            await getCachedStatDefinition(statHash, apiKey),
+            await getStatDefinitionWithRetry(statHash, apiKey),
           ] as const;
         } catch {
           return [statHash, null] as const;
@@ -483,7 +441,7 @@ export async function GET(
         try {
           return [
             plugSetHash,
-            await getCachedPlugSetDefinition(
+            await getPlugSetDefinitionWithRetry(
               plugSetHash,
               apiKey
             ),
@@ -546,7 +504,7 @@ export async function GET(
         try {
           return [
             plugHash,
-            await getCachedInventoryItemDefinition(
+            await getInventoryItemDefinitionWithRetry(
               plugHash,
               apiKey
             ),
@@ -590,7 +548,7 @@ export async function GET(
           try {
             return [
               perkHash,
-              await getCachedManifestDefinition(
+              await genericDefinitionCache.get(
                 "DestinySandboxPerkDefinition",
                 perkHash,
                 apiKey
@@ -791,7 +749,7 @@ export async function GET(
     if (typeof itemSetHash === "number") {
       try {
         const itemSetDefinition =
-          await getCachedManifestDefinition(
+          await genericDefinitionCache.get(
             "DestinyEquipableItemSetDefinition",
             itemSetHash,
             apiKey
@@ -816,7 +774,7 @@ export async function GET(
               try {
                 return [
                   perkHash,
-                  await getCachedManifestDefinition(
+                  await genericDefinitionCache.get(
                     "DestinySandboxPerkDefinition",
                     perkHash,
                     apiKey
@@ -894,7 +852,7 @@ export async function GET(
           try {
             return [
               perkHash,
-              await getCachedManifestDefinition(
+              await genericDefinitionCache.get(
                 "DestinySandboxPerkDefinition",
                 perkHash,
                 apiKey
@@ -1249,7 +1207,7 @@ const subclassCatalog =
       async (itemHash) => {
         try {
           const definition =
-            await getCachedInventoryItemDefinition(
+            await getInventoryItemDefinitionWithRetry(
               itemHash,
               apiKey
             );
@@ -1453,7 +1411,7 @@ const uniqueHashes: number[] = [
     16,
     async (itemHash) => {
       try {
-        const definition = await getCachedInventoryItemDefinition(
+        const definition = await getInventoryItemDefinitionWithRetry(
           itemHash,
           apiKey
         );
@@ -1470,7 +1428,7 @@ const uniqueHashes: number[] = [
     16,
     async (plugHash) => {
       try {
-        const definition = await getCachedInventoryItemDefinition(
+        const definition = await getInventoryItemDefinitionWithRetry(
           plugHash,
           apiKey
         );
@@ -1487,7 +1445,7 @@ const uniqueHashes: number[] = [
     16,
     async (plugHash) => {
       try {
-        const definition = await getCachedInventoryItemDefinition(
+        const definition = await getInventoryItemDefinitionWithRetry(
           plugHash,
           apiKey
         );
@@ -1504,7 +1462,7 @@ const uniqueHashes: number[] = [
     16,
     async (statHash) => {
       try {
-        const definition = await getCachedStatDefinition(
+        const definition = await getStatDefinitionWithRetry(
           statHash,
           apiKey
         );
@@ -1545,7 +1503,7 @@ const plugSetDefinitions = await mapWithConcurrency(
   16,
   async (plugSetHash) => {
     try {
-      const definition = await getCachedPlugSetDefinition(
+      const definition = await getPlugSetDefinitionWithRetry(
         plugSetHash,
         apiKey
       );
@@ -1582,7 +1540,7 @@ const manifestPlugDefinitions =
     async (plugHash) => {
       try {
         const definition =
-          await getCachedInventoryItemDefinition(
+          await getInventoryItemDefinitionWithRetry(
             plugHash,
             apiKey
           );
@@ -1622,7 +1580,7 @@ const definitionReusablePlugDefinitions =
     async (plugHash) => {
       try {
         const definition =
-          await getCachedInventoryItemDefinition(
+          await getInventoryItemDefinitionWithRetry(
             plugHash,
             apiKey
           );
@@ -1679,7 +1637,7 @@ const definitionReusablePlugMap =
         try {
           return [
             perkHash,
-            await getCachedManifestDefinition(
+            await genericDefinitionCache.get(
               "DestinySandboxPerkDefinition",
               perkHash,
               apiKey
@@ -1754,7 +1712,7 @@ const definitionReusablePlugMap =
         try {
           return [
             statHash,
-            await getCachedStatDefinition(statHash, apiKey),
+            await getStatDefinitionWithRetry(statHash, apiKey),
           ] as const;
         } catch {
           return [statHash, null] as const;
@@ -2694,7 +2652,7 @@ const definitionReusablePlugMap =
   if (seasonalArtifact?.artifactHash) {
     try {
       const artifactDefinition =
-        await getCachedManifestDefinition(
+        await genericDefinitionCache.get(
           "DestinyArtifactDefinition",
           seasonalArtifact.artifactHash,
           apiKey
@@ -2741,7 +2699,7 @@ const definitionReusablePlugMap =
             try {
               return [
                 itemHash,
-                await getCachedInventoryItemDefinition(
+                await getInventoryItemDefinitionWithRetry(
                   itemHash,
                   apiKey
                 ),
@@ -2784,7 +2742,7 @@ const definitionReusablePlugMap =
             try {
               return [
                 perkHash,
-                await getCachedManifestDefinition(
+                await genericDefinitionCache.get(
                   "DestinySandboxPerkDefinition",
                   perkHash,
                   apiKey
@@ -2950,7 +2908,7 @@ const definitionReusablePlugMap =
         try {
           return [
             hash,
-            await getCachedManifestDefinition(
+            await genericDefinitionCache.get(
               "DestinyLoadoutNameDefinition",
               hash,
               apiKey
@@ -2968,7 +2926,7 @@ const definitionReusablePlugMap =
         try {
           return [
             hash,
-            await getCachedManifestDefinition(
+            await genericDefinitionCache.get(
               "DestinyLoadoutIconDefinition",
               hash,
               apiKey
@@ -2986,7 +2944,7 @@ const definitionReusablePlugMap =
         try {
           return [
             hash,
-            await getCachedManifestDefinition(
+            await genericDefinitionCache.get(
               "DestinyLoadoutColorDefinition",
               hash,
               apiKey
