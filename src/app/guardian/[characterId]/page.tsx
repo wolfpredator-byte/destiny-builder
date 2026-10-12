@@ -283,6 +283,8 @@ export default function GuardianPage() {
   >({});
   const [openGearBucketHash, setOpenGearBucketHash] =
     useState<number | null>(null);
+  const [gearSearch, setGearSearch] = useState("");
+  const [includeAccountGearInPicker, setIncludeAccountGearInPicker] = useState(false);
 
   const [loading, setLoading] = useState(true);
   const [loadingMessageIndex, setLoadingMessageIndex] =
@@ -323,7 +325,9 @@ export default function GuardianPage() {
     useRef<Record<string, ItemDetail>>({});
   const hoverCloseTimerRef = useRef<number | null>(null);
   const pendingLoadoutHandledRef = useRef(false);
-  const draftRestoredRef = useRef(false);
+  // A state-based hydration barrier: never save defaults before the stored
+  // Builder Preview has actually been applied by React.
+  const [draftReadyFor, setDraftReadyFor] = useState<string | null>(null);
   const lastPointerRef = useRef({
     x: 24,
     y: 96,
@@ -370,6 +374,17 @@ export default function GuardianPage() {
     };
   }, []);
 
+  // The Destiny-style gear grid is a true modal; Escape closes it without
+  // changing the user's existing Builder preview.
+  useEffect(() => {
+    if (openGearBucketHash === null) return;
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpenGearBucketHash(null);
+    };
+    document.addEventListener("keydown", handleEscape);
+    return () => document.removeEventListener("keydown", handleEscape);
+  }, [openGearBucketHash]);
+
   // Status messages that are not tied to an active Bungie sync are transient.
   useEffect(() => {
     if (!syncMessage || syncing) {
@@ -404,129 +419,130 @@ export default function GuardianPage() {
     };
   }, [blockingOverlayOpen]);
 
+  // Resolve the saved draft during the SAME guarded async load as the Guardian.
+  // In dev, React Strict Mode may start this effect twice. An obsolete request
+  // must never reset a draft that was already restored by the current request.
   useEffect(() => {
+    let cancelled = false;
+    const abort = new AbortController();
+    setLoading(true);
+    setDraftReadyFor(null);
+    setError("");
+
     async function loadGuardian() {
       try {
-        const [
-          charactersResponse,
-          inventoryResponse,
-        ] = await Promise.all([
+        const [charactersResponse, inventoryResponse] = await Promise.all([
           fetch("/api/destiny/characters", {
             cache: "no-store",
+            signal: abort.signal,
           }),
-
-          fetch(
-            `/api/destiny/characters/${characterId}/inventory?scope=core`,
-            { cache: "no-store" }
-          ),
+          fetch(`/api/destiny/characters/${characterId}/inventory?scope=core`, {
+            cache: "no-store",
+            signal: abort.signal,
+          }),
         ]);
 
-        const charactersData =
-          await charactersResponse.json();
+        const [charactersData, inventoryData] = await Promise.all([
+          charactersResponse.json(),
+          inventoryResponse.json(),
+        ]);
+        if (cancelled) return;
 
-        const inventoryData =
-          await inventoryResponse.json();
-
-        // Refresh the Bungie OAuth session before treating 401 as a hard failure.
-        // This prevents the user from having to sign in again whenever the
-        // short-lived access token expires.
-        if (
-          charactersResponse.status === 401 ||
-          inventoryResponse.status === 401
-        ) {
-          const refreshResponse = await fetch(
-            "/api/auth/refresh",
-            { method: "POST" }
-          );
-
+        if (charactersResponse.status === 401 || inventoryResponse.status === 401) {
+          const refreshResponse = await fetch("/api/auth/refresh", {
+            method: "POST",
+            signal: abort.signal,
+          });
+          if (cancelled) return;
           if (refreshResponse.ok) {
             window.location.reload();
             return;
           }
         }
 
-
-        if (
-          !charactersResponse.ok ||
-          !charactersData.success
-        ) {
-          throw new Error(
-            charactersData.error ||
-              "Failed to load character"
-          );
+        if (!charactersResponse.ok || !charactersData.success) {
+          throw new Error(charactersData.error || "Failed to load character");
+        }
+        if (!inventoryResponse.ok || !inventoryData.success) {
+          throw new Error(inventoryData.error || "Failed to load inventory");
         }
 
-        if (
-          !inventoryResponse.ok ||
-          !inventoryData.success
-        ) {
-          throw new Error(
-            inventoryData.error ||
-              "Failed to load inventory"
-          );
+        const nextCharacters: Character[] = Array.isArray(charactersData.characters)
+          ? charactersData.characters : [];
+        const selectedCharacter = nextCharacters.find(
+          (entry) => String(entry.characterId) === String(characterId)
+        );
+        if (!selectedCharacter) throw new Error("Guardian not found");
+
+        const loadedSubclasses: GuardianSubclass[] = Array.isArray(inventoryData.subclasses)
+          ? inventoryData.subclasses : [];
+        const equippedSubclass = loadedSubclasses.find((entry) => entry.equipped);
+
+        // Read AFTER the network request, immediately before committing React
+        // state, so even an Assistant edit made while loading is not lost.
+        // Draft is never replaced by a default merely because Bungie refreshed.
+        let restored: Record<string, unknown> = {};
+        try {
+          const raw = window.localStorage.getItem(`destiny-builder-draft:${characterId}`);
+          if (raw) {
+            const parsed: unknown = JSON.parse(raw);
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+              restored = parsed as Record<string, unknown>;
+            }
+          }
+        } catch {
+          // Malformed optional drafts must not prevent a Guardian from loading.
         }
+        if (cancelled) return;
 
-        const selectedCharacter =
-          charactersData.characters.find(
-            (character: Character) =>
-              character.characterId === characterId
-          );
+        const savedGear = restored.previewGear;
+        const savedSubclassPlugs = restored.previewSubclassPlugs;
+        const savedArtifactPlugs = restored.previewArtifactPlugs;
+        const savedSubclassHash = restored.selectedSubclassHash;
+        const validSavedSubclass = typeof savedSubclassHash === "number" &&
+          loadedSubclasses.some((entry) => entry.itemHash === savedSubclassHash);
 
-        if (!selectedCharacter) {
-          throw new Error("Guardian not found");
-        }
-
-        const loadedSubclasses: GuardianSubclass[] =
-          inventoryData.subclasses ?? [];
-
-        setCharacters(Array.isArray(charactersData.characters) ? charactersData.characters : []);
+        setCharacters(nextCharacters);
         setCharacter(selectedCharacter);
-        setInventory(inventoryData.inventory ?? []);
-        setEquipment(inventoryData.equipment ?? []);
+        setInventory(Array.isArray(inventoryData.inventory) ? inventoryData.inventory : []);
+        setEquipment(Array.isArray(inventoryData.equipment) ? inventoryData.equipment : []);
         setVaultItems([]);
         setOtherGuardianItems([]);
         setVaultError("");
-        setPreviewGear({});
-        setPreviewSubclassPlugs({});
-        setPreviewArtifactIdentity(null);
-        setPreviewArtifactPlugs({});
+        setPreviewGear(savedGear && typeof savedGear === "object" && !Array.isArray(savedGear)
+          ? savedGear as Record<string, GearPreviewSelection> : {});
+        setPreviewSubclassPlugs(savedSubclassPlugs && typeof savedSubclassPlugs === "object" && !Array.isArray(savedSubclassPlugs)
+          ? savedSubclassPlugs as Record<string, SubclassPlug> : {});
+        setPreviewArtifactIdentity(typeof restored.previewArtifactIdentity === "string"
+          ? restored.previewArtifactIdentity : null);
+        setPreviewArtifactPlugs(savedArtifactPlugs && typeof savedArtifactPlugs === "object" && !Array.isArray(savedArtifactPlugs)
+          ? savedArtifactPlugs as Record<string, number> : {});
         setOpenGearBucketHash(null);
-        setSubclassSetup(
-          inventoryData.subclassSetup ?? null
-        );
+        setSubclassSetup(inventoryData.subclassSetup ?? null);
         setSubclasses(loadedSubclasses);
-        setSeasonalArtifact(
-          inventoryData.artifact ??
-            inventoryData.seasonalArtifact ??
-            null
-        );
-        setInGameLoadouts(
-          Array.isArray(inventoryData.inGameLoadouts)
-            ? inventoryData.inGameLoadouts
-            : []
-        );
+        setSeasonalArtifact(inventoryData.artifact ?? inventoryData.seasonalArtifact ?? null);
+        setInGameLoadouts(Array.isArray(inventoryData.inGameLoadouts) ? inventoryData.inGameLoadouts : []);
+        setSelectedSubclassHash(validSavedSubclass
+          ? savedSubclassHash as number
+          : equippedSubclass?.itemHash ?? loadedSubclasses[0]?.itemHash ?? null);
 
-        const equippedSubclass = loadedSubclasses.find(
-          (subclass) => subclass.equipped
-        );
-
-        setSelectedSubclassHash(
-          equippedSubclass?.itemHash ??
-            loadedSubclasses[0]?.itemHash ??
-            null
-        );
+        // This barrier and all the restored values commit in one React batch.
+        // The persistence effect cannot run with empty default state.
+        setDraftReadyFor(characterId);
       } catch (err) {
-        setError(
-          err instanceof Error
-            ? err.message
-            : "Unknown error"
-        );
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "Unknown error");
+        }
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     }
 
-    loadGuardian();
+    void loadGuardian();
+    return () => {
+      cancelled = true;
+      abort.abort();
+    };
   }, [characterId]);
 
   useEffect(() => {
@@ -654,46 +670,16 @@ export default function GuardianPage() {
     }
   }, []);
 
-  // Preserve the unsaved Builder preview while moving between dedicated
-  // Guardian pages (Loadouts now, Subclass / Artifact next). This is a local
-  // draft only; it never writes anything to Bungie.
-  useEffect(() => {
-    if (loading || !character || draftRestoredRef.current) {
-      return;
-    }
-
-    try {
-      const raw = window.localStorage.getItem(
-        `destiny-builder-draft:${characterId}`
-      );
-
-      if (raw) {
-        const draft = JSON.parse(raw);
-        if (typeof draft?.selectedSubclassHash === "number") {
-          setSelectedSubclassHash(draft.selectedSubclassHash);
-        }
-        if (draft?.previewSubclassPlugs && typeof draft.previewSubclassPlugs === "object") {
-          setPreviewSubclassPlugs(draft.previewSubclassPlugs);
-        }
-        if (draft?.previewGear && typeof draft.previewGear === "object") {
-          setPreviewGear(draft.previewGear);
-        }
-        if (typeof draft?.previewArtifactIdentity === "string" || draft?.previewArtifactIdentity === null) {
-          setPreviewArtifactIdentity(draft.previewArtifactIdentity ?? null);
-        }
-        if (draft?.previewArtifactPlugs && typeof draft.previewArtifactPlugs === "object") {
-          setPreviewArtifactPlugs(draft.previewArtifactPlugs);
-        }
-      }
-    } catch {
-      // A malformed local draft should never block the Builder.
-    } finally {
-      draftRestoredRef.current = true;
-    }
-  }, [loading, character, characterId]);
+  // The first Guardian request now restores all preview fields atomically.
+  // Do not add another restore effect here: it can race with the initial save.
 
   useEffect(() => {
-    if (loading || !character || !draftRestoredRef.current) {
+    if (
+      loading ||
+      !character ||
+      String(character.characterId) !== String(characterId) ||
+      draftReadyFor !== characterId
+    ) {
       return;
     }
 
@@ -715,6 +701,7 @@ export default function GuardianPage() {
     loading,
     character,
     characterId,
+    draftReadyFor,
     selectedSubclassHash,
     previewSubclassPlugs,
     previewGear,
@@ -1132,6 +1119,48 @@ useEffect(() => {
   builderLoadouts,
 ]);
 
+  // Quick Overview is a click-driven inspector. Keep this hook above every
+  // early return so React always sees the same hook order while Guardian data
+  // transitions from loading to ready.
+  useEffect(() => {
+    if (!hoveredItem) return;
+
+    const closeQuickOverview = () => {
+      if (hoverCloseTimerRef.current !== null) {
+        window.clearTimeout(hoverCloseTimerRef.current);
+        hoverCloseTimerRef.current = null;
+      }
+      setHoveredItem(null);
+    };
+
+    const handleOutsidePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+
+      // Let the inspector itself and gear cards handle their own clicks. Gear
+      // cards need this exception so clicking the same card can toggle the panel.
+      if (
+        target.closest('[data-item-quick-overview="true"]') ||
+        target.closest('[data-item-inspector-trigger="true"]')
+      ) {
+        return;
+      }
+
+      closeQuickOverview();
+    };
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeQuickOverview();
+    };
+
+    document.addEventListener("pointerdown", handleOutsidePointerDown);
+    document.addEventListener("keydown", handleEscape);
+
+    return () => {
+      document.removeEventListener("pointerdown", handleOutsidePointerDown);
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, [hoveredItem]);
 
   if (loading) {
     return (
@@ -1305,7 +1334,48 @@ const getSubclassPlugFromPreviewState = (
   }
 
   const key = `${selectedSubclass.itemHash}:${slot.socketIndex}`;
-  return previewState[key] ?? slot.equipped;
+  const selectedPlug = previewState[key] ?? slot.equipped;
+
+  if (!selectedPlug) {
+    return null;
+  }
+
+  // Live Bungie socket data can occasionally be sparser than the matching
+  // Manifest/PlugSet option (Aspects are a common example). Keep the live
+  // equipped/unlocked state, but fill missing display metadata from the same
+  // plugHash already present in the slot's available options.
+  const definitionPlug = (slot.available ?? []).find(
+    (candidate) => candidate.plugHash === selectedPlug.plugHash
+  );
+
+  if (!definitionPlug) {
+    return selectedPlug;
+  }
+
+  return {
+    ...definitionPlug,
+    ...selectedPlug,
+    description:
+      selectedPlug.description?.trim()
+        ? selectedPlug.description
+        : definitionPlug.description,
+    icon: selectedPlug.icon ?? definitionPlug.icon,
+    plugCategoryIdentifier:
+      selectedPlug.plugCategoryIdentifier ?? definitionPlug.plugCategoryIdentifier,
+    fragmentSlots:
+      selectedPlug.fragmentSlots ?? definitionPlug.fragmentSlots,
+    statEffects:
+      selectedPlug.statEffects?.length
+        ? selectedPlug.statEffects
+        : definitionPlug.statEffects,
+    effectTags:
+      selectedPlug.effectTags?.length
+        ? selectedPlug.effectTags
+        : definitionPlug.effectTags,
+    possible: selectedPlug.possible || definitionPlug.possible,
+    unlocked: selectedPlug.unlocked || definitionPlug.unlocked,
+    equipped: selectedPlug.equipped || definitionPlug.equipped,
+  };
 };
 
 const getSelectedSubclassPlug = (
@@ -1595,6 +1665,16 @@ const cancelHoverClose = () => {
 
 const handleHoverItem = (item: DestinyItem) => {
   cancelHoverClose();
+
+  // Clicking the item that already owns the Quick Overview toggles it closed.
+  if (
+    hoveredItem &&
+    getItemIdentity(hoveredItem.item) === getItemIdentity(item)
+  ) {
+    setHoveredItem(null);
+    return;
+  }
+
   const pointer = lastPointerRef.current;
   setHoveredItem({
     item,
@@ -1604,6 +1684,16 @@ const handleHoverItem = (item: DestinyItem) => {
     viewportHeight: pointer.viewportHeight,
   });
   void ensureItemDetail(item);
+};
+
+const openGearPicker = (slotItem: DestinyItem) => {
+  const bucketHash = getEquipmentSlotHash(slotItem);
+  if (bucketHash === null || (slotItem.category !== "weapon" && slotItem.category !== "armor")) return;
+  cancelHoverClose();
+  setHoveredItem(null);
+  setGearSearch("");
+  setIncludeAccountGearInPicker(false);
+  setOpenGearBucketHash(bucketHash);
 };
 
 const handleHoverItemLeave = () => {
@@ -1991,6 +2081,51 @@ const allKnownGear = [
   ...otherGuardianItems,
 ];
 
+const pickerEquippedItem = openGearBucketHash === null ? null :
+  [...equippedWeapons, ...equippedArmor].find(
+    (item) => getEquipmentSlotHash(item) === openGearBucketHash
+  ) ?? null;
+
+const pickerGuardianClassType = character.className === "Titan" ? 0 : character.className === "Hunter" ? 1 : 2;
+const pickerCandidates: DestinyItem[] = (() => {
+  if (!pickerEquippedItem) return [];
+  const candidates = [
+    pickerEquippedItem,
+    ...inventory,
+    ...(includeAccountGearInPicker ? [...vaultItems, ...otherGuardianItems] : []),
+  ];
+  const seen = new Set<string>();
+  return candidates.filter((item) => {
+    if (item.category !== pickerEquippedItem.category ||
+        getEquipmentSlotHash(item) !== openGearBucketHash) return false;
+    // Class-specific armor on a different Guardian must not be offered.
+    if (item.category === "armor" && item.classType !== null &&
+        item.classType !== 3 && item.classType !== pickerGuardianClassType) return false;
+    const id = getItemIdentity(item);
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+})();
+
+const applyGearPreview = (nextItem: DestinyItem) => {
+  if (!pickerEquippedItem || openGearBucketHash === null) return;
+  const slotKey = String(openGearBucketHash);
+  setPreviewGear((current) => {
+    const next = { ...current };
+    if (getItemIdentity(nextItem) === getItemIdentity(pickerEquippedItem)) {
+      delete next[slotKey];
+    } else {
+      const inVault = vaultItems.some((item) => getItemIdentity(item) === getItemIdentity(nextItem));
+      const onOtherGuardian = otherGuardianItems.some((item) => getItemIdentity(item) === getItemIdentity(nextItem));
+      next[slotKey] = { item: nextItem, source: inVault ? "vault" : onOtherGuardian ? "otherGuardian" : "character" };
+    }
+    return next;
+  });
+  setOpenGearBucketHash(null);
+  void ensureItemDetail(nextItem);
+};
+
 const effectiveWeapons = equippedWeapons.map((equippedItem) => {
   const slotHash = getEquipmentSlotHash(equippedItem);
   return slotHash !== null
@@ -2105,7 +2240,7 @@ const activeFavoriteLoadout = activeBuilderLoadoutId
       currentBuildHref={`/guardian/${characterId}`}
       loadoutsHref={`/guardian/${characterId}/loadouts`}
       subclassHref={`/guardian/${characterId}/subclass`}
-      artifactHref={`/guardian/${characterId}#artifact-panel`}
+      artifactHref={`/guardian/${characterId}/artifact`}
       guardianContextSection="build"
       guardianId={characterId}
       guardianClassName={character.className}
@@ -2187,6 +2322,7 @@ const activeFavoriteLoadout = activeBuilderLoadoutId
         previewGear={previewGear}
         getItemDetail={getCachedDetail}
         onInspectItem={handleHoverItem}
+        onChooseGear={openGearPicker}
       />
     </aside>
 
@@ -2442,7 +2578,15 @@ const activeFavoriteLoadout = activeBuilderLoadoutId
 
             {(seasonalArtifact || selectedArtifactItem) && (
               <div id="artifact-panel" className="scroll-mt-32">
-                <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-white/35">Seasonal Artifact</p>
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-white/35">Seasonal Artifact</p>
+                  <Link
+                    href={`/guardian/${characterId}/artifact`}
+                    className="border border-cyan-200/20 bg-cyan-200/[0.05] px-2.5 py-1.5 text-[9px] font-bold uppercase tracking-[0.14em] text-cyan-100 transition hover:border-cyan-200/40 hover:bg-cyan-200/[0.1]"
+                  >
+                    Open in Artifact Editor →
+                  </Link>
+                </div>
                 <ArtifactCard
                   compact
                   readOnly
@@ -2502,6 +2646,7 @@ const activeFavoriteLoadout = activeBuilderLoadoutId
         previewGear={previewGear}
         getItemDetail={getCachedDetail}
         onInspectItem={handleHoverItem}
+        onChooseGear={openGearPicker}
       />
 
       <div className="mt-4 border border-white/10 bg-[#080b11] p-4">
@@ -2581,6 +2726,24 @@ const activeFavoriteLoadout = activeBuilderLoadoutId
         Save current build
       </button>
 
+      {pickerEquippedItem && openGearBucketHash !== null && (
+        <GearSlotPicker
+          slotItem={pickerEquippedItem}
+          equippedItem={pickerEquippedItem}
+          currentItem={previewGear[String(openGearBucketHash)]?.item ?? pickerEquippedItem}
+          candidates={pickerCandidates}
+          search={gearSearch}
+          onSearchChange={setGearSearch}
+          includeAccountGear={includeAccountGearInPicker}
+          onIncludeAccountChange={setIncludeAccountGearInPicker}
+          accountGearLoading={accountGearLoading}
+          getItemDetail={getCachedDetail}
+          onEnsureDetail={(item) => { void ensureItemDetail(item); }}
+          onPick={applyGearPreview}
+          onClose={() => setOpenGearBucketHash(null)}
+        />
+      )}
+
       {quickSaveOpen && (
         <div
           className="fixed inset-0 z-[125] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
@@ -2639,6 +2802,7 @@ const activeFavoriteLoadout = activeBuilderLoadoutId
           compareDetail={getCachedDetail(compareBaseline)}
           onCompare={handleStartCompare}
           onDetails={handleOpenDetails}
+          onChangeGear={openGearPicker}
           onClose={closeItemInspector}
           onInspectorEnter={() => {}}
           onInspectorLeave={() => {}}
@@ -2938,6 +3102,289 @@ function ItemAppearanceIcon({
   );
 }
 
+function GearPickerStatComparison({
+  candidate,
+  candidateDetail,
+  baseline,
+  baselineDetail,
+}: {
+  candidate: DestinyItem;
+  candidateDetail: ItemDetail | null;
+  baseline: DestinyItem;
+  baselineDetail: ItemDetail | null;
+}) {
+  const candidateStats = getEffectiveStats(candidate, candidateDetail);
+  const baselineStats = getEffectiveStats(baseline, baselineDetail);
+  const candidateMap = new Map(candidateStats.map((stat) => [stat.statHash, stat]));
+  const baselineMap = new Map(baselineStats.map((stat) => [stat.statHash, stat]));
+  const isArmor = candidate.category === "armor";
+  const statHashes = Array.from(new Set([
+    ...candidateStats.map((stat) => stat.statHash),
+    ...baselineStats.map((stat) => stat.statHash),
+  ])).sort((a, b) => {
+    if (!isArmor) return 0;
+    const aOrder = ARMOR_STAT_ORDER.indexOf(a as typeof ARMOR_STAT_ORDER[number]);
+    const bOrder = ARMOR_STAT_ORDER.indexOf(b as typeof ARMOR_STAT_ORDER[number]);
+    return (aOrder < 0 ? 100 : aOrder) - (bOrder < 0 ? 100 : bOrder);
+  });
+  const candidateTotal = candidateDetail?.armorStatTotal ?? candidate.armorStatTotal;
+  const baselineTotal = baselineDetail?.armorStatTotal ?? baseline.armorStatTotal;
+  const power = getEffectivePower(candidate, candidateDetail);
+  const baselinePower = getEffectivePower(baseline, baselineDetail);
+  const tier = getEffectiveGearTier(candidate, candidateDetail);
+  const sameItem = getItemIdentity(candidate) === getItemIdentity(baseline);
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 gap-2">
+        <div className="border border-white/10 bg-black/25 p-2.5">
+          <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-white/40">Power</p>
+          <div className="mt-1 flex items-baseline gap-2">
+            <span className="text-xl font-black tabular-nums text-amber-100">{power ?? "—"}</span>
+            {power !== null && baselinePower !== null && power !== baselinePower && (
+              <span className={`text-xs font-bold tabular-nums ${power > baselinePower ? "text-emerald-300" : "text-rose-300"}`}>
+                {power > baselinePower ? "+" : ""}{power - baselinePower}
+              </span>
+            )}
+          </div>
+        </div>
+        <div className="border border-white/10 bg-black/25 p-2.5">
+          <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-white/40">{isArmor ? "Armor stat total" : "Gear tier"}</p>
+          {isArmor ? (
+            <div className="mt-1 flex items-baseline gap-2">
+              <span className="text-xl font-black tabular-nums text-white/90">{candidateTotal ?? "—"}</span>
+              {candidateTotal !== null && baselineTotal !== null && candidateTotal !== baselineTotal && (
+                <span className={`text-xs font-bold tabular-nums ${candidateTotal > baselineTotal ? "text-emerald-300" : "text-rose-300"}`}>
+                  {candidateTotal > baselineTotal ? "+" : ""}{candidateTotal - baselineTotal}
+                </span>
+              )}
+            </div>
+          ) : <div className="mt-3"><GearTierDots tier={tier} /><span className="ml-2 text-xs text-white/45">{tier ?? "—"}</span></div>}
+        </div>
+      </div>
+      <div className="border-t border-white/10 pt-3">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-white/55">{isArmor ? "Armor 3.0 stats" : "Weapon statistics"}</p>
+          <span className="text-[9px] uppercase tracking-wider text-white/30">vs current preview</span>
+        </div>
+        {statHashes.length ? (
+          <div className="space-y-3">
+            {statHashes.map((hash) => {
+              const stat = candidateMap.get(hash);
+              const reference = baselineMap.get(hash);
+              const value = stat?.value;
+              const before = reference?.value;
+              const diff = value !== undefined && before !== undefined ? value - before : null;
+              const barValue = value !== undefined && value >= 0 && value <= 100 ? value : null;
+              const baselineBar = before !== undefined && before >= 0 && before <= 100 ? before : null;
+              return (
+                <div key={hash}>
+                  <div className="flex items-center justify-between gap-2 text-[11px]">
+                    <span className="truncate text-white/60" title={stat?.description || reference?.description || undefined}>{stat?.name ?? reference?.name ?? "Stat"}</span>
+                    <span className="flex shrink-0 items-center gap-1.5 font-semibold tabular-nums">
+                      <span className="text-white/30">{before ?? "—"}</span>
+                      <span className="text-white/20">→</span>
+                      <span className="text-white/90">{value ?? "—"}</span>
+                      {diff !== null && diff !== 0 && (
+                        <span className={`min-w-8 text-right ${diff > 0 ? "text-emerald-300" : "text-rose-300"}`}>
+                          {diff > 0 ? "+" : ""}{diff}
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                  {barValue !== null && (
+                    <div className="relative mt-1.5 h-1.5 bg-white/10">
+                      <div className="h-full bg-cyan-200/80 transition-[width] duration-150" style={{ width: `${barValue}%` }} />
+                      {baselineBar !== null && <div className="absolute -top-0.5 h-2.5 w-px bg-amber-200" style={{ left: `${baselineBar}%` }} title={`Current preview: ${baselineBar}`} />}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <p className="border border-dashed border-white/10 p-3 text-xs leading-relaxed text-white/40">
+            Statistics are not available in the current snapshot. Keep the pointer on this item to load its Bungie details.
+          </p>
+        )}
+        {sameItem && <p className="mt-3 text-[10px] text-cyan-200/50">This is your current Builder preview.</p>}
+      </div>
+    </div>
+  );
+}
+
+function GearSlotPicker({
+  slotItem,
+  equippedItem,
+  currentItem,
+  candidates,
+  search,
+  onSearchChange,
+  includeAccountGear,
+  onIncludeAccountChange,
+  accountGearLoading,
+  getItemDetail,
+  onEnsureDetail,
+  onPick,
+  onClose,
+}: {
+  slotItem: DestinyItem;
+  equippedItem: DestinyItem;
+  currentItem: DestinyItem;
+  candidates: DestinyItem[];
+  search: string;
+  onSearchChange: (next: string) => void;
+  includeAccountGear: boolean;
+  onIncludeAccountChange: (next: boolean) => void;
+  accountGearLoading: boolean;
+  getItemDetail: (item: DestinyItem) => ItemDetail | null;
+  onEnsureDetail: (item: DestinyItem) => void;
+  onPick: (item: DestinyItem) => void;
+  onClose: () => void;
+}) {
+  const [inspectedId, setInspectedId] = useState(() => getItemIdentity(currentItem));
+  const [sort, setSort] = useState<"name" | "power" | "total">("name");
+  const className = "h-[62px] w-[62px] sm:h-[72px] sm:w-[72px]";
+  // Avoid expensive detail fanout: one deliberate hover/focus loads one item.
+  // Refs are only read from effects, never accessed during render.
+  const requestedRef = useRef(new Set<string>());
+
+  const normalized = search.trim().toLowerCase();
+  const matches = candidates.filter((item) =>
+    !normalized || `${item.name} ${item.itemTypeDisplayName ?? ""} ${getItemLocationLabel(item)}`.toLowerCase().includes(normalized)
+  ).sort((a, b) => {
+    if (sort === "power") return (b.power ?? -1) - (a.power ?? -1) || a.name.localeCompare(b.name);
+    if (sort === "total") {
+      const getTotal = (item: DestinyItem) => getItemDetail(item)?.armorStatTotal ?? item.armorStatTotal ?? -1;
+      return getTotal(b) - getTotal(a) || a.name.localeCompare(b.name);
+    }
+    return a.name.localeCompare(b.name) || (b.power ?? -1) - (a.power ?? -1);
+  });
+  const inspectedItem = candidates.find((item) => getItemIdentity(item) === inspectedId) ?? currentItem;
+  const inspectedKey = getItemIdentity(inspectedItem);
+  const inspectedDetail = getItemDetail(inspectedItem);
+  const currentDetail = getItemDetail(currentItem);
+  const candidatePerks = inspectedDetail ? getQuickPerks(inspectedDetail) : (inspectedItem.roll ?? []).filter((perk) => Boolean(perk.name));
+  const sameAsCurrent = inspectedKey === getItemIdentity(currentItem);
+  const isEquipped = inspectedKey === getItemIdentity(equippedItem);
+
+  useEffect(() => {
+    if (!inspectedItem.itemInstanceId || inspectedDetail || requestedRef.current.has(inspectedKey)) return;
+    const timer = window.setTimeout(() => {
+      if (requestedRef.current.has(inspectedKey)) return;
+      requestedRef.current.add(inspectedKey);
+      onEnsureDetail(inspectedItem);
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [inspectedKey, inspectedItem, inspectedDetail, onEnsureDetail]);
+
+  return createPortal(
+    <div className="fixed inset-0 z-[1000] flex items-center justify-center overflow-y-auto bg-black/80 p-3 backdrop-blur-sm sm:p-5"
+      onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
+      role="presentation">
+      <section role="dialog" aria-modal="true" aria-label={`Choose ${getGearSlotName(slotItem)}`}
+        className="flex h-[min(800px,calc(100dvh-2.5rem))] min-h-0 w-full max-w-6xl flex-col overflow-hidden border border-cyan-200/25 bg-[#080c13] shadow-[0_24px_90px_rgba(0,0,0,0.75)]">
+        <header className="sticky top-0 z-20 flex shrink-0 flex-wrap items-start justify-between gap-3 border-b border-white/10 bg-[#111923] px-4 py-3 sm:px-6 sm:py-4">
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-[0.25em] text-cyan-200/55">Guardian inventory · Builder preview</p>
+            <h2 className="mt-1 text-xl font-black uppercase tracking-[0.09em] text-white/90">{getGearSlotName(slotItem)}</h2>
+            <p className="mt-1 text-xs text-white/40">Hover or focus to inspect and compare · Click to preview · No changes in Destiny</p>
+          </div>
+          <button type="button" onClick={onClose} className="shrink-0 border border-white/15 px-3 py-1.5 text-xs font-bold uppercase text-white/55 hover:bg-white/10 hover:text-white">Close ✕</button>
+        </header>
+        <div className="grid min-h-0 flex-1 grid-cols-1 overflow-y-auto lg:grid-cols-[minmax(0,1fr)_390px] lg:overflow-hidden">
+          <div className="flex min-h-0 min-w-0 flex-col lg:border-r lg:border-white/10">
+            <div className="flex flex-wrap items-center gap-2.5 border-b border-white/10 p-3 sm:p-4">
+              <input type="search" value={search} onChange={(event) => onSearchChange(event.target.value)}
+                placeholder="Search this slot…" aria-label="Search Guardian gear" className="min-w-[155px] flex-1 border border-white/15 bg-black/30 px-3 py-2 text-xs text-white outline-none placeholder:text-white/30 focus:border-cyan-200/50" />
+              <label className="flex cursor-pointer items-center gap-2 text-[11px] text-white/55">
+                <input type="checkbox" checked={includeAccountGear} onChange={(event) => onIncludeAccountChange(event.target.checked)} className="accent-cyan-300" />
+                Include Vault + other Guardians
+              </label>
+              <select value={sort} onChange={(event) => setSort(event.target.value as "name" | "power" | "total")}
+                aria-label="Sort equipment" className="border border-white/15 bg-[#111923] px-2 py-2 text-xs text-white/70 outline-none">
+                <option value="name">Name</option><option value="power">Power ↓</option>
+                {slotItem.category === "armor" && <option value="total">Stat total ↓</option>}
+              </select>
+            </div>
+            <div className="min-h-0 overflow-y-auto p-3 sm:p-5">
+              <p className="mb-3 text-[10px] font-bold uppercase tracking-[0.2em] text-white/35">{includeAccountGear ? "Account options" : "Current Guardian inventory"} · {matches.length} items{accountGearLoading && includeAccountGear ? " · Syncing…" : ""}</p>
+              <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-5">
+                {matches.map((item) => {
+                  const identity = getItemIdentity(item);
+                  const equipped = identity === getItemIdentity(equippedItem);
+                  const selected = identity === getItemIdentity(currentItem);
+                  const inspected = identity === inspectedKey;
+                  const detail = getItemDetail(item);
+                  return (
+                    <button key={identity} type="button" onClick={() => onPick(item)}
+                      onMouseEnter={() => setInspectedId(identity)} onFocus={() => setInspectedId(identity)}
+                      title={`${item.name} · ${getItemLocationLabel(item)} · Power ${item.power ?? "—"} · ${equipped ? "Equipped in Destiny" : selected ? "Current preview" : "Preview"}`}
+                      className={`group flex min-w-0 flex-col items-center border p-2 text-left transition ${inspected ? "border-cyan-200/70 bg-cyan-200/[0.09]" : selected ? "border-emerald-300/50 bg-emerald-300/[0.035]" : "border-white/10 bg-white/[0.02] hover:border-cyan-200/40 hover:bg-white/[0.05]"}`}>
+                      <span className="relative block shrink-0 border border-white/10 bg-black/30">
+                        <ItemAppearanceIcon item={item} detail={detail} className={className} />
+                        {selected && <span className="absolute right-0 top-0 flex h-4 w-4 items-center justify-center bg-cyan-200 text-[10px] font-black text-[#071017]">✓</span>}
+                        {equipped && <span className="absolute bottom-0 left-0 right-0 bg-black/85 py-0.5 text-center text-[8px] font-bold uppercase tracking-wider text-emerald-200">Equipped</span>}
+                      </span>
+                      <span className="mt-2 block w-full truncate text-[10px] font-semibold text-white/80">{item.name}</span>
+                      <span className="mt-1 block w-full truncate text-[9px] text-amber-100/65">{item.power !== null ? `Power ${item.power}` : "Power —"}</span>
+                      <span className="mt-0.5 block w-full truncate text-[9px] text-white/35">{getItemLocationLabel(item)}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              {!matches.length && <p className="mt-5 text-xs text-white/45">No matching equipment in this slot.{includeAccountGear && accountGearLoading ? " Vault and other Guardians are still loading." : ""}</p>}
+            </div>
+          </div>
+          <aside className="min-h-0 overflow-y-auto border-t border-white/10 bg-[#0b121c] p-4 sm:p-5 lg:border-t-0">
+            <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-cyan-200/55">{sameAsCurrent ? "Current Builder preview" : "Inspect gear · compare"}</p>
+            <div className="mt-3 flex items-center gap-3 border-b border-white/10 pb-4">
+              <ItemAppearanceIcon item={inspectedItem} detail={inspectedDetail} className="h-[72px] w-[72px] shrink-0" />
+              <div className="min-w-0">
+                <p className="text-sm font-black uppercase text-white/90">{inspectedItem.name}</p>
+                <p className="mt-1 text-[10px] text-white/40">{inspectedItem.itemTypeDisplayName ?? inspectedItem.category} · {inspectedItem.tierTypeName ?? ""}</p>
+                <p className="mt-1 text-[10px] text-white/45">{getItemLocationLabel(inspectedItem)}</p>
+                {isEquipped && <span className="mt-1 inline-block text-[9px] font-bold uppercase text-emerald-200/75">Equipped in Destiny</span>}
+              </div>
+            </div>
+            {!sameAsCurrent && (
+              <p className="mt-3 text-[10px] leading-relaxed text-white/45">
+                Comparing against <span className="font-semibold text-white/70">{currentItem.name}</span>, your current Builder preview. Green/red numbers show real stat differences.
+              </p>
+            )}
+            <div className="mt-4">
+              <GearPickerStatComparison candidate={inspectedItem} candidateDetail={inspectedDetail} baseline={currentItem} baselineDetail={currentDetail}/>
+            </div>
+            <div className="mt-4 border-t border-white/10 pt-4">
+              <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/40">Selected perks</p>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {candidatePerks.slice(0, 10).map((perk, i) => (
+                  <div key={`${perk.socketIndex}-${i}`} title={`${perk.name}${perk.description ? `: ${perk.description}` : ""}`} className="flex h-9 w-9 items-center justify-center border border-white/10 bg-black/25">
+                    {perk.icon ? <img src={`https://www.bungie.net${perk.icon}`} alt={perk.name} className="h-7 w-7 object-contain" /> : <span className="text-[9px] text-white/40">•</span>}
+                  </div>
+                ))}
+              </div>
+              {!candidatePerks.length && <p className="mt-2 text-[11px] text-white/35">Perks will appear when item details are available.</p>}
+            </div>
+            <div className="sticky bottom-0 -mx-4 mt-4 border-t border-white/10 bg-[#0b121c]/95 px-4 pb-1 pt-3 backdrop-blur sm:-mx-5 sm:px-5">
+              {!sameAsCurrent && (
+                <button type="button" onClick={() => onPick(inspectedItem)} className="w-full border border-cyan-200/50 bg-cyan-200/10 px-3 py-2.5 text-xs font-bold uppercase tracking-wide text-cyan-100 transition hover:bg-cyan-200/20">
+                  Preview this {inspectedItem.category === "armor" ? "armor" : "weapon"} →
+                </button>
+              )}
+              {getItemIdentity(currentItem) !== getItemIdentity(equippedItem) && (
+                <button type="button" onClick={() => onPick(equippedItem)} className="mt-2 w-full border border-white/20 px-3 py-2.5 text-xs font-bold uppercase tracking-wide text-white/65 hover:bg-white/10 hover:text-white">Reset to Destiny equipped</button>
+              )}
+              <p className="mt-2 text-[10px] leading-relaxed text-white/35">All selections are local Builder previews. Nothing is moved or equipped in Destiny.</p>
+            </div>
+          </aside>
+        </div>
+      </section>
+    </div>,
+    document.body
+  );
+}
+
 function HybridGearRail({
   title,
   equippedItems,
@@ -2945,6 +3392,7 @@ function HybridGearRail({
   previewGear,
   getItemDetail,
   onInspectItem,
+  onChooseGear,
 }: {
   title: string;
   equippedItems: DestinyItem[];
@@ -2952,6 +3400,7 @@ function HybridGearRail({
   previewGear: Record<string, GearPreviewSelection>;
   getItemDetail: (item: DestinyItem) => ItemDetail | null;
   onInspectItem: (item: DestinyItem) => void;
+  onChooseGear: (item: DestinyItem) => void;
 }) {
   const slots = [...equippedItems]
     .filter((item) => getEquipmentSlotHash(item) !== null)
@@ -2981,11 +3430,12 @@ function HybridGearRail({
           const isPreviewing = previewSelection !== null;
 
           return (
+            <div key={bucketHash} className="relative">
             <button
-              key={bucketHash}
               type="button"
+              data-item-inspector-trigger="true"
               onClick={() => onInspectItem(previewItem)}
-              className="group w-full border border-white/10 bg-white/[0.025] p-3.5 text-left transition hover:border-white/25 hover:bg-white/[0.05]"
+              className="group w-full border border-white/10 bg-white/[0.025] p-3.5 pr-16 text-left transition hover:border-white/25 hover:bg-white/[0.05]"
               aria-label={`Inspect ${previewItem.name}`}
             >
               <div className="flex gap-3">
@@ -3041,6 +3491,15 @@ function HybridGearRail({
                 </div>
               </div>
             </button>
+            <button
+              type="button"
+              title={`Choose ${getGearSlotName(equippedItem)} for Builder preview`}
+              onClick={() => onChooseGear(previewItem)}
+              className="absolute right-2 top-2 border border-cyan-200/30 bg-[#111b25] px-2 py-1.5 text-[10px] font-bold uppercase tracking-wider text-cyan-100/80 hover:border-cyan-200/60 hover:bg-cyan-200/[0.14] hover:text-cyan-50"
+            >
+              Change
+            </button>
+            </div>
           );
         })}
       </div>
@@ -4640,6 +5099,7 @@ function ItemHoverInspector({
   compareDetail,
   onCompare,
   onDetails,
+  onChangeGear,
   onClose,
   onInspectorEnter,
   onInspectorLeave,
@@ -4655,6 +5115,7 @@ function ItemHoverInspector({
   compareDetail: ItemDetail | null;
   onCompare: (item: DestinyItem) => void;
   onDetails: (item: DestinyItem) => void;
+  onChangeGear: (item: DestinyItem) => void;
   onClose: () => void;
   onInspectorEnter: () => void;
   onInspectorLeave: () => void;
@@ -4709,21 +5170,25 @@ function ItemHoverInspector({
   );
 
   const viewportMargin = 16;
+  const safeTop = 128;
   const verticalGap = 18;
-  const maxAvailableHeight = Math.max(220, viewportHeight - viewportMargin * 2);
+  const maxAvailableHeight = Math.max(
+    220,
+    viewportHeight - safeTop - viewportMargin
+  );
   const effectiveHeight = Math.min(measuredHeight, maxAvailableHeight);
-  let inspectorTop = Math.max(viewportMargin, anchorY - 48);
+  let inspectorTop = Math.max(safeTop, anchorY - 48);
 
   if (inspectorTop + effectiveHeight > viewportHeight - viewportMargin) {
     inspectorTop = Math.max(
-      viewportMargin,
+      safeTop,
       anchorY - effectiveHeight - verticalGap
     );
   }
 
   if (inspectorTop + effectiveHeight > viewportHeight - viewportMargin) {
     inspectorTop = Math.max(
-      viewportMargin,
+      safeTop,
       viewportHeight - effectiveHeight - viewportMargin
     );
   }
@@ -4733,6 +5198,7 @@ function ItemHoverInspector({
   return (
     <div
       ref={inspectorRef}
+      data-item-quick-overview="true"
       onMouseEnter={onInspectorEnter}
       onMouseLeave={onInspectorLeave}
       style={{
@@ -4785,7 +5251,14 @@ function ItemHoverInspector({
             </p>
           )}
 
-          <div className="mt-4 flex gap-2 border-t border-white/10 pt-4">
+          <div className="mt-4 flex flex-wrap gap-2 border-t border-white/10 pt-4">
+            <button
+              type="button"
+              onClick={() => onChangeGear(item)}
+              className="min-w-[110px] flex-1 rounded-lg border border-cyan-200/35 bg-cyan-200/[0.08] px-3 py-2 text-sm font-bold text-cyan-100 hover:bg-cyan-200/[0.15]"
+            >
+              Change Gear
+            </button>
             <button
               type="button"
               onClick={() => onCompare(item)}

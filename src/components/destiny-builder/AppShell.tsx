@@ -1,10 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useState, type ReactNode } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { useEffect, useState, type ReactNode } from "react";
 
-type AppSection = "guardians" | "builder" | "loadouts" | "vault";
+type AppSection = "guardians" | "builder" | "loadouts" | "vault" | "assistant";
 type GuardianContextSection = "build" | "subclass" | "artifact";
 
 type GuardianSwitchOption = {
@@ -38,8 +38,17 @@ type AppShellProps = {
   onSync?: () => void;
 };
 
+const ACTIVE_GUARDIAN_KEY = "destiny-builder-active-guardian";
+
+/** Read only a Guardian ID from the local in-app destination, never from a guessed account. */
+function guardianIdFromHref(href?: string): string | null {
+  if (!href) return null;
+  const match = /^\/guardian\/([^/?#]+)(?:[/?#]|$)/.exec(href);
+  return match?.[1] ?? null;
+}
+
 const globalNavItems: Array<{
-  key: Exclude<AppSection, "builder">;
+  key: Exclude<AppSection, "builder" | "assistant">;
   label: string;
   href: string;
 }> = [
@@ -70,10 +79,33 @@ export default function AppShell({
   onSync,
 }: AppShellProps) {
   const router = useRouter();
+  const pathname = usePathname();
   const [guardianMenuOpen, setGuardianMenuOpen] = useState(false);
+  // Home provides the current Build URL; Vault provides the active Guardian's
+  // Loadouts URL. Guardian pages provide the ID directly. This keeps the nav
+  // correct on every page without a second source of truth or new requests.
+  const assistantGuardianId = guardianId
+    || guardianIdFromHref(currentBuildHref)
+    || guardianIdFromHref(loadoutsHref);
+  const assistantHref = assistantGuardianId
+    ? `/guardian/${encodeURIComponent(assistantGuardianId)}/assistant`
+    : null;
+  const assistantOpen = activeSection === "assistant"
+    || /^\/guardian\/[^/]+\/assistant(?:\/|$)/.test(pathname ?? "");
   const hasGuardianContext = Boolean(guardianId || guardianClassName || guardianLabel);
   const displayClassName = guardianClassName ?? guardianLabel ?? "Guardian";
   const displaySubtitle = guardianSubclassName ?? null;
+
+  // Keep a single account-level active Guardian while navigating the editor
+  // pages. Never store it from Vault (which has no active Guardian context).
+  useEffect(() => {
+    if (!guardianId) return;
+    try {
+      window.localStorage.setItem(ACTIVE_GUARDIAN_KEY, guardianId);
+    } catch {
+      // Local storage can be unavailable in private browsing.
+    }
+  }, [guardianId]);
 
   return (
     <div className="min-h-screen bg-[#07090d] text-white">
@@ -122,15 +154,30 @@ export default function AppShell({
               );
             })}
 
-            <button
-              type="button"
-              disabled
-              title="Build Assistant arrives with the Build Engine phase"
-              className="whitespace-nowrap border border-violet-400/10 bg-violet-400/[0.04] px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-violet-200/45"
-            >
-              Build Assistant
-              <span className="ml-2 rounded-sm bg-violet-400/10 px-1 py-0.5 text-[9px]">AI</span>
-            </button>
+            {assistantHref ? (
+              <Link
+                href={assistantHref}
+                aria-current={assistantOpen ? "page" : undefined}
+                title="Analyze the active Guardian's build and review recommendations"
+                className={`whitespace-nowrap border px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.14em] transition ${
+                  assistantOpen
+                    ? "border-violet-300/45 bg-violet-400/[0.12] text-violet-100"
+                    : "border-violet-400/15 bg-violet-400/[0.04] text-violet-200/70 hover:border-violet-300/35 hover:bg-violet-400/[0.10] hover:text-violet-100"
+                }`}
+              >
+                Build Assistant
+                <span className="ml-2 rounded-sm bg-violet-400/10 px-1 py-0.5 text-[9px]">AI</span>
+              </Link>
+            ) : (
+              <span
+                aria-disabled="true"
+                title="Select a Guardian before opening Build Assistant"
+                className="cursor-not-allowed whitespace-nowrap border border-violet-400/10 bg-violet-400/[0.04] px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-violet-200/30"
+              >
+                Build Assistant
+                <span className="ml-2 rounded-sm bg-violet-400/10 px-1 py-0.5 text-[9px]">AI</span>
+              </span>
+            )}
           </nav>
 
           <div className="hidden items-center gap-2 xl:flex">
@@ -201,6 +248,7 @@ export default function AppShell({
                             type="button"
                             onClick={() => {
                               setGuardianMenuOpen(false);
+                              try { window.localStorage.setItem(ACTIVE_GUARDIAN_KEY, guardian.characterId); } catch { /* optional */ }
                               if (!current) {
                                 router.push(guardian.href);
                               }
@@ -243,7 +291,7 @@ export default function AppShell({
                 <ContextLink
                   label="Build"
                   href={currentBuildHref}
-                  active={activeSection === "builder" && guardianContextSection === "build"}
+                  active={activeSection === "builder" && guardianContextSection === "build" && !assistantOpen}
                 />
                 <ContextLink
                   label="Subclass"

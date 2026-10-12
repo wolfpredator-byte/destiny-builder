@@ -559,6 +559,80 @@ export async function GET(
 
     const plugDefinitionMap = new Map(plugDefinitions);
 
+    // Some perk-style DestinyInventoryItemDefinition entries (including
+    // Seasonal Artifact perks) expose their name/icon on the item definition
+    // but keep the actual gameplay text in a linked
+    // DestinySandboxPerkDefinition. Resolve only the missing descriptions in
+    // detail scope so the normal fast path stays unchanged.
+    const detailFallbackSandboxPerkHashes = [
+      ...new Set<number>(
+        plugDefinitions
+          .map(([, definition]) => definition)
+          .filter(
+            (definition: any) =>
+              definition &&
+              !(definition?.displayProperties?.description ?? "").trim()
+          )
+          .flatMap((definition: any) => definition?.perks ?? [])
+          .map((perk: any) => perk?.perkHash)
+          .filter(
+            (hash: unknown): hash is number =>
+              typeof hash === "number" && hash > 0
+          )
+      ),
+    ];
+
+    const detailFallbackSandboxPerkDefinitions =
+      await mapWithConcurrency(
+        detailFallbackSandboxPerkHashes,
+        8,
+        async (perkHash) => {
+          try {
+            return [
+              perkHash,
+              await getCachedManifestDefinition(
+                "DestinySandboxPerkDefinition",
+                perkHash,
+                apiKey
+              ),
+            ] as const;
+          } catch {
+            return [perkHash, null] as const;
+          }
+        }
+      );
+
+    const detailFallbackSandboxPerkDefinitionMap =
+      new Map(detailFallbackSandboxPerkDefinitions);
+
+    const getDetailPlugDescription = (definition: any) => {
+      const directDescription =
+        definition?.displayProperties?.description?.trim?.() ?? "";
+
+      if (directDescription) {
+        return directDescription;
+      }
+
+      for (const perk of definition?.perks ?? []) {
+        const perkHash = perk?.perkHash;
+
+        if (typeof perkHash !== "number") {
+          continue;
+        }
+
+        const perkDescription =
+          detailFallbackSandboxPerkDefinitionMap
+            .get(perkHash)
+            ?.displayProperties?.description?.trim?.() ?? "";
+
+        if (perkDescription) {
+          return perkDescription;
+        }
+      }
+
+      return "";
+    };
+
     const toPlug = (
       plugHash: number,
       socketIndex: number,
@@ -589,7 +663,7 @@ export async function GET(
         plugDefinition?.plug?.plugCategoryIdentifier ??
         null;
       const description =
-        plugDefinition?.displayProperties?.description ?? "";
+        getDetailPlugDescription(plugDefinition);
 
       return {
         socketIndex,
@@ -1573,6 +1647,89 @@ const definitionReusablePlugMap =
     ...Array.from(plugDefinitionMap.values()),
   ].filter(Boolean);
 
+  // Aspect DestinyInventoryItemDefinition entries often have an empty
+  // displayProperties.description even though their gameplay text exists in
+  // the linked DestinySandboxPerkDefinition. Resolve only those Aspect perk
+  // definitions here so the core subclass payload can expose the official
+  // Bungie description without moving heavy item-detail work back into core.
+  const aspectSandboxPerkHashes = [
+    ...new Set<number>(
+      subclassPlugDefinitionPool
+        .filter(
+          (definition: any) =>
+            getSubclassSlotType(
+              definition?.plug?.plugCategoryIdentifier ?? null
+            ) === "aspect" &&
+            !(definition?.displayProperties?.description ?? "").trim()
+        )
+        .flatMap((definition: any) => definition?.perks ?? [])
+        .map((perk: any) => perk?.perkHash)
+        .filter(
+          (hash: unknown): hash is number =>
+            typeof hash === "number" && hash > 0
+        )
+    ),
+  ];
+
+  const aspectSandboxPerkDefinitions =
+    await mapWithConcurrency(
+      aspectSandboxPerkHashes,
+      8,
+      async (perkHash) => {
+        try {
+          return [
+            perkHash,
+            await getCachedManifestDefinition(
+              "DestinySandboxPerkDefinition",
+              perkHash,
+              apiKey
+            ),
+          ] as const;
+        } catch {
+          return [perkHash, null] as const;
+        }
+      }
+    );
+
+  const aspectSandboxPerkDefinitionMap =
+    new Map(aspectSandboxPerkDefinitions);
+
+  const getSubclassPlugDescription = (definition: any) => {
+    const directDescription =
+      definition?.displayProperties?.description?.trim?.() ?? "";
+
+    if (directDescription) {
+      return directDescription;
+    }
+
+    if (
+      getSubclassSlotType(
+        definition?.plug?.plugCategoryIdentifier ?? null
+      ) !== "aspect"
+    ) {
+      return "";
+    }
+
+    for (const perk of definition?.perks ?? []) {
+      const perkHash = perk?.perkHash;
+
+      if (typeof perkHash !== "number") {
+        continue;
+      }
+
+      const perkDescription =
+        aspectSandboxPerkDefinitionMap
+          .get(perkHash)
+          ?.displayProperties?.description?.trim?.() ?? "";
+
+      if (perkDescription) {
+        return perkDescription;
+      }
+    }
+
+    return "";
+  };
+
   const subclassInvestmentStatHashes = [
     ...new Set<number>(
       subclassPlugDefinitionPool
@@ -1719,7 +1876,7 @@ const definitionReusablePlugMap =
               plugHash,
               name,
               description:
-                plugDefinition?.displayProperties?.description ?? "",
+                getSubclassPlugDescription(plugDefinition),
               icon:
                 plugDefinition?.displayProperties?.icon ?? null,
               plugCategoryIdentifier,
@@ -1729,7 +1886,7 @@ const definitionReusablePlugMap =
                 getSubclassStatEffects(plugDefinition),
               effectTags: getCombatEffectTags(
                 name,
-                plugDefinition?.displayProperties?.description ?? ""
+                getSubclassPlugDescription(plugDefinition)
               ),
               possible: true,
               unlocked: false,
@@ -2058,7 +2215,7 @@ const definitionReusablePlugMap =
                 availableDefinition?.displayProperties?.name ??
                 "Unknown Plug",
               description:
-                availableDefinition?.displayProperties?.description ?? "",
+                getSubclassPlugDescription(availableDefinition),
               icon:
                 availableDefinition?.displayProperties?.icon ?? null,
               plugCategoryIdentifier,
@@ -2068,7 +2225,7 @@ const definitionReusablePlugMap =
                 getSubclassStatEffects(availableDefinition),
               effectTags: getCombatEffectTags(
                 availableDefinition?.displayProperties?.name ?? "",
-                availableDefinition?.displayProperties?.description ?? ""
+                getSubclassPlugDescription(availableDefinition)
               ),
               possible: true,
               unlocked,
@@ -2093,7 +2250,7 @@ const definitionReusablePlugMap =
             name:
               plugDefinition?.displayProperties?.name ?? "Unknown Plug",
             description:
-              plugDefinition?.displayProperties?.description ?? "",
+              getSubclassPlugDescription(plugDefinition),
             icon:
               plugDefinition?.displayProperties?.icon ?? null,
             plugCategoryIdentifier:
@@ -2104,7 +2261,7 @@ const definitionReusablePlugMap =
               getSubclassStatEffects(plugDefinition),
             effectTags: getCombatEffectTags(
               plugDefinition?.displayProperties?.name ?? "",
-              plugDefinition?.displayProperties?.description ?? ""
+              getSubclassPlugDescription(plugDefinition)
             ),
             plugCategoryHash:
               plugDefinition?.plug?.plugCategoryHash ?? null,
@@ -2598,6 +2755,78 @@ const definitionReusablePlugMap =
       const artifactItemMap =
         new Map(artifactItemDefinitions);
 
+      // Artifact perk item definitions can also omit display text and point to
+      // a DestinySandboxPerkDefinition instead. Resolve those linked perk
+      // definitions only when the direct description is empty.
+      const artifactSandboxPerkHashes = [
+        ...new Set<number>(
+          artifactItemDefinitions
+            .map(([, definition]) => definition)
+            .filter(
+              (definition: any) =>
+                definition &&
+                !(definition?.displayProperties?.description ?? "").trim()
+            )
+            .flatMap((definition: any) => definition?.perks ?? [])
+            .map((perk: any) => perk?.perkHash)
+            .filter(
+              (hash: unknown): hash is number =>
+                typeof hash === "number" && hash > 0
+            )
+        ),
+      ];
+
+      const artifactSandboxPerkDefinitions =
+        await mapWithConcurrency(
+          artifactSandboxPerkHashes,
+          8,
+          async (perkHash) => {
+            try {
+              return [
+                perkHash,
+                await getCachedManifestDefinition(
+                  "DestinySandboxPerkDefinition",
+                  perkHash,
+                  apiKey
+                ),
+              ] as const;
+            } catch {
+              return [perkHash, null] as const;
+            }
+          }
+        );
+
+      const artifactSandboxPerkDefinitionMap =
+        new Map(artifactSandboxPerkDefinitions);
+
+      const getArtifactPerkDescription = (definition: any) => {
+        const directDescription =
+          definition?.displayProperties?.description?.trim?.() ?? "";
+
+        if (directDescription) {
+          return directDescription;
+        }
+
+        for (const perk of definition?.perks ?? []) {
+          const perkHash = perk?.perkHash;
+
+          if (typeof perkHash !== "number") {
+            continue;
+          }
+
+          const perkDescription =
+            artifactSandboxPerkDefinitionMap
+              .get(perkHash)
+              ?.displayProperties?.description?.trim?.() ?? "";
+
+          if (perkDescription) {
+            return perkDescription;
+          }
+        }
+
+        return "";
+      };
+
       artifact = {
         artifactHash:
           seasonalArtifact.artifactHash,
@@ -2647,8 +2876,7 @@ const definitionReusablePlugMap =
                     itemDefinition?.displayProperties
                       ?.name ?? "Artifact Perk",
                   description:
-                    itemDefinition?.displayProperties
-                      ?.description ?? "",
+                    getArtifactPerkDescription(itemDefinition),
                   icon:
                     itemDefinition?.displayProperties
                       ?.icon ?? null,

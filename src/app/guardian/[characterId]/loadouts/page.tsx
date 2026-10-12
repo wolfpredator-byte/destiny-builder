@@ -338,7 +338,7 @@ export default function GuardianLoadoutsPage() {
       currentBuildHref={`/guardian/${characterId}`}
       loadoutsHref={`/guardian/${characterId}/loadouts`}
       subclassHref={`/guardian/${characterId}/subclass`}
-      artifactHref={`/guardian/${characterId}#artifact-panel`}
+      artifactHref={`/guardian/${characterId}/artifact`}
       guardianId={characterId}
       guardianClassName={character.className}
       guardianEmblemPath={character.emblemPath}
