@@ -241,7 +241,7 @@ export default function HomePage() {
               <p className="mx-auto mt-3 max-w-lg text-sm leading-6 text-white/45">
                 Sign in to load your Guardians, view real inventory data and continue your saved Builder previews.
               </p>
-              <Link href="/api/auth/login" className="mt-7 inline-flex border border-cyan-200/40 bg-cyan-200/10 px-6 py-3 text-xs font-bold uppercase tracking-[0.12em] text-cyan-100 hover:bg-cyan-200/20">Login with Bungie →</Link>
+              <Link href="/api/auth/bungie" className="mt-7 inline-flex border border-cyan-200/40 bg-cyan-200/10 px-6 py-3 text-xs font-bold uppercase tracking-[0.12em] text-cyan-100 hover:bg-cyan-200/20">Login with Bungie →</Link>
             </section>
           ) : (
             <>
@@ -318,7 +318,7 @@ export default function HomePage() {
                   </div>
                 ) : (
                   <div className="border border-white/10 bg-white/[0.025] p-8 text-center text-sm text-white/50">
-                    No Guardians found for this Bungie account. <Link href="/api/auth/login" className="ml-2 text-cyan-100 underline">Reconnect Bungie</Link>
+                    No Guardians found for this Bungie account. <Link href="/api/auth/bungie" className="ml-2 text-cyan-100 underline">Reconnect Bungie</Link>
                   </div>
                 )}
               </section>

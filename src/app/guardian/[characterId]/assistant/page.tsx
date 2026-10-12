@@ -49,6 +49,7 @@ import {
   createUniversalPlanningContext,
   type UniversalPlanningContext,
   type PlanningGearOption,
+  type PlanningSubclassOption,
 } from "@/lib/destiny-builder/universalPlanningContext";
 import {
   generateFullBuildCandidates,
@@ -57,7 +58,7 @@ import {
   type FullBuildGenerationRequest,
   type FullBuildProposalResult,
 } from "@/lib/destiny-builder/fullBuildPlanner";
-import { buildBudgetedAiContext } from "@/lib/destiny-builder/aiContextBudget";
+import { buildBudgetedAiContext, type SharedAiPacket } from "@/lib/destiny-builder/aiContextBudget";
 
 type Guardian = GuardianInfo & {
   emblemPath?: string | null;
@@ -504,6 +505,8 @@ export default function BuildEnginePreviewPage() {
   const [error, setError] = useState("");
   const [accountError, setAccountError] = useState("");
   const [detailError, setDetailError] = useState("");
+  const [exoticReplacementLoading, setExoticReplacementLoading] = useState(false);
+  const [exoticReplacementError, setExoticReplacementError] = useState("");
   const [activity, setActivity] = useState<ActivityKind>("general");
   const [mode, setMode] = useState<BuildMode>("owned");
   const [goal, setGoal] = useState("");
@@ -1137,6 +1140,96 @@ export default function BuildEnginePreviewPage() {
     detailBusyRef.current = false;
   }, [characterId, missingDetails, updateArmorCacheStatus]);
 
+  // Load details for exotic replacement candidates
+  const resolveExoticReplacementDetails = useCallback(async (slotHash: number) => {
+    if (!universalPlanningContext || exoticReplacementLoading) return;
+    const generation = contextGenerationRef.current;
+    const currentCharacterId = characterId;
+
+    // Find items that meet all replacement criteria except detailCoverage
+    const usedInstances = new Set(
+      universalPlanningContext.gearOptions
+        .filter((item) => item.selectedInBuild && item.itemInstanceId !== null)
+        .map((item) => item.itemInstanceId!)
+    );
+
+    const selectedExotic = universalPlanningContext.gearOptions.find((item) =>
+      item.category === "armor" && item.selectedInBuild && item.slotHash === slotHash &&
+      item.armorMetadata?.exotic === true);
+
+    if (!selectedExotic) return;
+
+    const candidates = universalPlanningContext.gearOptions.filter((item) =>
+      item.category === "armor" && item.slotHash === slotHash &&
+      item.itemInstanceId !== selectedExotic.itemInstanceId &&
+      item.itemInstanceId !== null &&
+      !usedInstances.has(item.itemInstanceId) &&
+      item.eligibility === "candidate" &&
+      item.positionStatus === "confirmed" &&
+      item.armorMetadata?.exotic === false &&
+      item.detailCoverage !== "verified");
+
+    // Limit to 4 candidates
+    const toLoad = candidates.slice(0, 4);
+    if (toLoad.length === 0) return;
+
+    setExoticReplacementLoading(true);
+    setExoticReplacementError("");
+
+    // Check which details are already cached
+    const missing: Array<{ itemInstanceId: string; itemHash: number }> = [];
+    for (const item of toLoad) {
+      if (item.itemInstanceId && !details[item.itemInstanceId]) {
+        missing.push({ itemInstanceId: item.itemInstanceId, itemHash: item.itemHash });
+      }
+    }
+
+    if (missing.length === 0) {
+      setExoticReplacementLoading(false);
+      return;
+    }
+
+    let failures = 0;
+    const results: ItemDetail[] = [];
+
+    for (const item of missing) {
+      if (generation !== contextGenerationRef.current || currentCharacterId !== characterId) break;
+      try {
+        const result = await fetchJson(
+          `/api/destiny/characters/${encodeURIComponent(currentCharacterId)}/inventory?scope=detail&itemInstanceId=${encodeURIComponent(item.itemInstanceId)}&itemHash=${item.itemHash}`
+        );
+        const detail = result.item as ItemDetail | undefined;
+        if (detail && detail.itemInstanceId === item.itemInstanceId && detail.itemHash === item.itemHash) {
+          results.push(detail);
+        } else {
+          failures++;
+        }
+      } catch {
+        failures++;
+      }
+    }
+
+    if (generation !== contextGenerationRef.current || currentCharacterId !== characterId) {
+      setExoticReplacementLoading(false);
+      return;
+    }
+
+    updateArmorCacheStatus(cacheFetchedArmorDetails(currentCharacterId, results));
+    setDetails((current) => {
+      const next = { ...current };
+      for (const result of results) {
+        if (result.itemInstanceId) next[result.itemInstanceId] = result;
+      }
+      return next;
+    });
+
+    if (failures > 0) {
+      setExoticReplacementError(`${failures} item detail${failures === 1 ? "" : "s"} could not be loaded. You can retry.`);
+    }
+
+    setExoticReplacementLoading(false);
+  }, [universalPlanningContext, characterId, details, exoticReplacementLoading, updateArmorCacheStatus, setDetails]);
+
   // Start only AFTER core, Vault/other Guardians, and cache reconciliation finish.
   // Run at most once per snapshot generation, even as each detail response causes
   // a React re-render. A refresh may try missing items once again; cache hits cost
@@ -1275,7 +1368,7 @@ export default function BuildEnginePreviewPage() {
                   hint="Unverified data is not silently assumed" />
               </div>
               {universalPlanningContext && <PlanningCoveragePanel data={universalPlanningContext} />}
-              {universalPlanningContext && <FullBuildCandidatesPanel key={characterId} data={universalPlanningContext} />}
+              {universalPlanningContext && <FullBuildCandidatesPanel key={characterId} data={universalPlanningContext} characterId={characterId} details={details} setDetails={setDetails} updateArmorCacheStatus={updateArmorCacheStatus} resolveExoticReplacementDetails={resolveExoticReplacementDetails} exoticReplacementLoading={exoticReplacementLoading} exoticReplacementError={exoticReplacementError} />}
               <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(280px,0.7fr)]">
                 <section className={`${card} space-y-4`}>
                   <p className={smallHeading}>Analysis context</p>
@@ -1643,6 +1736,8 @@ type AiBuildHypothesis = {
   reason: string;
   tradeoffs: string[];
   unknowns: string[];
+  /** Optional explicit ability/aspect/fragment selections for the proposed subclass. */
+  socketChoices?: Array<{ socketIndex: number; plugHash: number }>;
 };
 
 type CheckedAiHypothesis = {
@@ -1650,6 +1745,10 @@ type CheckedAiHypothesis = {
   selectedNames: string[];
   /** Additional owned armor swaps required to make an AI Exotic suggestion structurally legal. */
   automaticArmorSwaps: string[];
+  /** Validated socket choices passed to the preflight validator. */
+  socketPlugs: Record<string, number>;
+  /** Human-readable explanation of socket validation outcomes. */
+  socketValidationMessages: string[];
   validation: FullBuildProposalResult | null;
   blockedReason: string | null;
 };
@@ -1671,11 +1770,25 @@ function isAiBuildHypothesis(value: unknown): value is AiBuildHypothesis {
   const shortArray = (part: unknown, maximum: number, length: number): part is string[] =>
     Array.isArray(part) && part.length <= maximum &&
     part.every((v: unknown) => typeof v === "string" && v.length <= length);
+  const isValidSocketChoice = (choice: unknown): choice is { socketIndex: number; plugHash: number } => {
+    if (typeof choice !== "object" || choice === null || Array.isArray(choice)) return false;
+    const c = choice as Record<string, unknown>;
+    return typeof c.socketIndex === "number" &&
+      Number.isSafeInteger(c.socketIndex) &&
+      c.socketIndex >= 0 &&
+      typeof c.plugHash === "number" &&
+      Number.isSafeInteger(c.plugHash) &&
+      c.plugHash > 0;
+  };
+  const isValidSocketChoices = (choices: unknown): boolean =>
+    choices === undefined ||
+    (Array.isArray(choices) && choices.length <= 20 && choices.every(isValidSocketChoice));
   return typeof x.title === "string" && x.title.length <= 90 &&
     (x.subclassHash === null || (typeof x.subclassHash === "number" && Number.isSafeInteger(x.subclassHash))) &&
     shortArray(x.gearRefs, 8, 3) && new Set(x.gearRefs).size === x.gearRefs.length &&
     typeof x.reason === "string" && x.reason.length <= 420 &&
-    shortArray(x.tradeoffs, 4, 150) && shortArray(x.unknowns, 4, 150);
+    shortArray(x.tradeoffs, 4, 150) && shortArray(x.unknowns, 4, 150) &&
+    isValidSocketChoices(x.socketChoices);
 }
 
 /** Detail fetches may update object references while an AI request is pending.
@@ -1688,6 +1801,184 @@ function selectedBuildSignature(data: UniversalPlanningContext): string {
       .map((entry) => [entry.slotHash, entry.itemInstanceId, entry.itemHash])
       .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
   });
+}
+
+/**
+ * 8R.6.3C5C1 — Validate AI-proposed socket choices against observed context.
+ * Only accept choices that were present in the AI packet and remain available
+ * in the live context. Reject locked/unknown abilities, duplicates, and
+ * invalid plug hashes. Never treat missing packet data as evidence of unavailability.
+ */
+function validateAiSocketChoices(
+  choices: AiBuildHypothesis["socketChoices"],
+  targetSubclass: PlanningSubclassOption | null,
+  aiPacket: SharedAiPacket,
+  liveContext: UniversalPlanningContext,
+): {
+  socketPlugs: Record<string, number>;
+  validationMessages: string[];
+  blockedReason: string | null;
+} {
+  const socketPlugs: Record<string, number> = {};
+  const validationMessages: string[] = [];
+  const blockedReasons: string[] = [];
+
+  if (!choices || choices.length === 0) {
+    return { socketPlugs, validationMessages, blockedReason: null };
+  }
+
+  if (!targetSubclass) {
+    return { socketPlugs, validationMessages, blockedReason: "Socket choices require a valid target subclass." };
+  }
+
+  // Build a map of observed socket options from the AI packet for verification
+  const packetSocketMap = new Map<number, Map<number, { name: string; status: string }>>();
+  for (const subclass of aiPacket.subclasses) {
+    if (subclass.hash !== targetSubclass.itemHash) continue;
+    for (const socket of subclass.sockets) {
+      const optionMap = new Map<number, { name: string; status: string }>();
+      for (const option of socket.options) {
+        optionMap.set(option.hash, { name: option.name, status: option.status });
+      }
+      packetSocketMap.set(socket.index, optionMap);
+    }
+  }
+
+  // Build a map of live socket options for duplicate/ambiguity checks
+  const liveSocketMap = new Map<number, Map<number, { name: string; status: string }>>();
+  for (const socket of targetSubclass.sockets) {
+    const optionMap = new Map<number, { name: string; status: string }>();
+    for (const option of socket.options) {
+      optionMap.set(option.plugHash, { name: option.name, status: option.status });
+    }
+    liveSocketMap.set(socket.socketIndex, optionMap);
+  }
+
+  const seenPlugHashes = new Set<number>();
+  const socketIndicesUsed = new Set<number>();
+
+  for (const choice of choices) {
+    const { socketIndex, plugHash } = choice;
+
+    // Check if socket was in the AI packet
+    const packetOptions = packetSocketMap.get(socketIndex);
+    if (!packetOptions) {
+      blockedReasons.push(`Socket ${socketIndex} was not observed in the AI packet for this subclass.`);
+      continue;
+    }
+
+    // Check if plug was in the AI packet
+    const packetOption = packetOptions.get(plugHash);
+    if (!packetOption) {
+      blockedReasons.push(`Plug ${plugHash} was not observed in socket ${socketIndex} in the AI packet.`);
+      continue;
+    }
+
+    // Check if still available in live context
+    const liveOptions = liveSocketMap.get(socketIndex);
+    if (!liveOptions) {
+      blockedReasons.push(`Socket ${socketIndex} is no longer available in the live context.`);
+      continue;
+    }
+
+    const liveOption = liveOptions.get(plugHash);
+    if (!liveOption) {
+      blockedReasons.push(`Plug ${plugHash} is no longer available in socket ${socketIndex} in the live context.`);
+      continue;
+    }
+
+    // Reject locked or unknown abilities
+    if (liveOption.status !== "equipped" && liveOption.status !== "unlocked") {
+      blockedReasons.push(`Plug ${liveOption.name} (${plugHash}) is ${liveOption.status} and cannot be selected.`);
+      continue;
+    }
+
+    // Check for duplicate plug hashes (aspects/fragments that appear only once)
+    const slotType = targetSubclass.sockets.find((s: { socketIndex: number; slotType: string }) => s.socketIndex === socketIndex)?.slotType ?? "";
+    const isUniqueSlot = /aspect|fragment/i.test(slotType);
+    if (isUniqueSlot && seenPlugHashes.has(plugHash)) {
+      blockedReasons.push(`Plug ${liveOption.name} (${plugHash}) is selected twice; ${slotType} plugs must be unique.`);
+      continue;
+    }
+
+    // Check for duplicate socket indices
+    if (socketIndicesUsed.has(socketIndex)) {
+      blockedReasons.push(`Socket ${socketIndex} is selected multiple times.`);
+      continue;
+    }
+
+    // All checks passed
+    socketPlugs[String(socketIndex)] = plugHash;
+    validationMessages.push(`Selected ${liveOption.name} in ${slotType} socket ${socketIndex}.`);
+    seenPlugHashes.add(plugHash);
+    socketIndicesUsed.add(socketIndex);
+  }
+
+  return {
+    socketPlugs,
+    validationMessages,
+    blockedReason: blockedReasons.length > 0 ? blockedReasons.join(" ") : null,
+  };
+}
+
+/**
+ * 8R.6.3C5A2 — An AI may cite the currently selected item alongside the
+ * replacement for the SAME slot. Treat that as a tentative swap only when
+ * identity, baseline selection and replacement eligibility are unambiguous.
+ * Two unselected alternatives (or an explicit keep request) remain BLOCKED.
+ * This interpretation is always visible and never applies changes to Bungie.
+ */
+function reconcileAiSameSlotReferences(
+  referenced: readonly PlanningGearOption[],
+  mustKeep: readonly string[],
+): {
+  gearBySlot: Record<string, { itemInstanceId: string; itemHash: number }>;
+  selectedNames: string[];
+  explainedSwaps: string[];
+  blockedReason: string | null;
+} {
+  const gearBySlot: Record<string, { itemInstanceId: string; itemHash: number }> = {};
+  const selectedNames: string[] = [];
+  const explainedSwaps: string[] = [];
+  const groups = new Map<number, PlanningGearOption[]>();
+  for (const item of referenced) {
+    if (item.slotHash === null || item.itemInstanceId === null) return {
+      gearBySlot, selectedNames, explainedSwaps,
+      blockedReason: "Uno degli oggetti AI non ha uno slot o un'identità di istanza verificabile.",
+    };
+    const group = groups.get(item.slotHash) ?? [];
+    group.push(item);
+    groups.set(item.slotHash, group);
+  }
+  for (const [slotHash, group] of groups) {
+    let finalChoice: PlanningGearOption;
+    if (group.length === 1) finalChoice = group[0];
+    else {
+      const baseline = group.filter((item) => item.selectedInBuild);
+      const alternatives = group.filter((item) => !item.selectedInBuild);
+      const original = baseline[0];
+      const replacement = alternatives[0];
+      const explicitlyProtected = Boolean(original && mustKeep.some((value) => {
+        const key = value.trim().toLocaleLowerCase();
+        const name = original.name.trim().toLocaleLowerCase();
+        return key.length >= 3 && (key === name || key.includes(name));
+      }));
+      if (group.length !== 2 || baseline.length !== 1 || alternatives.length !== 1 ||
+          !original || !replacement || original.category !== replacement.category ||
+          replacement.eligibility !== "candidate" || replacement.positionStatus !== "confirmed" ||
+          explicitlyProtected) {
+        return { gearBySlot, selectedNames, explainedSwaps,
+          blockedReason: `La proposta cita più oggetti nello slot ${slotHash} senza una sostituzione inequivocabile e verificabile. L'AI deve scegliere una sola alternativa.`,
+        };
+      }
+      finalChoice = replacement;
+      const slotName = ARMOR_SLOTS.find((part) => part.slotHash === slotHash)?.name ?? `slot ${slotHash}`;
+      explainedSwaps.push(`${original.name} → ${replacement.name} (${slotName}; l'AI ha citato sia il pezzo selezionato sia l'alternativa: interpretato come sostituzione, non come due oggetti equipaggiati)`);
+    }
+    gearBySlot[String(slotHash)] = { itemInstanceId: finalChoice.itemInstanceId!, itemHash: finalChoice.itemHash };
+    selectedNames.push(finalChoice.name);
+  }
+  return { gearBySlot, selectedNames, explainedSwaps, blockedReason: null };
 }
 
 /**
@@ -1773,11 +2064,111 @@ function reconcileAiArmorExotics(
 }
 
 /**
+ * 8R.6.3C5E1a — Read-only diagnostics for exotic armor replacement availability.
+ * Distinguishes truly absent items from owned items excluded due to missing data.
+ * No Bungie calls, no detail fetches, no Preview modifications.
+ * Only considers items with confirmed exotic status (exotic === true).
+ */
+function exoticReplacementDiagnostics(context: UniversalPlanningContext): Array<{
+  exoticName: string;
+  slotName: string;
+  slotHash: number;
+  // Progressive counts
+  totalAlternatives: number;
+  withInstanceId: number;
+  notAlreadyUsed: number;
+  eligibleCandidate: number;
+  positionConfirmed: number;
+  confirmedNonExotic: number;
+  detailVerified: number;
+  fullyQualified: number;
+  // Independent exclusion reasons
+  excludedInstanceId: number;
+  excludedAlreadyUsed: number;
+  excludedNotCandidate: number;
+  excludedNotConfirmed: number;
+  excludedUnknownRarity: number;
+  excludedNotVerified: number;
+}> {
+  const diagnostics: ReturnType<typeof exoticReplacementDiagnostics> = [];
+  // Collect all item instance IDs currently used in the build
+  const usedInstances = new Set(
+    context.gearOptions
+      .filter((item) => item.selectedInBuild && item.itemInstanceId !== null)
+      .map((item) => item.itemInstanceId!)
+  );
+
+  // Only consider armor with confirmed exotic status
+  const selectedExotics = context.gearOptions.filter((item) =>
+    item.category === "armor" && item.selectedInBuild && item.slotHash !== null &&
+    item.armorMetadata?.exotic === true);
+
+  for (const exotic of selectedExotics) {
+    const slotHash = exotic.slotHash;
+    const slotName = ARMOR_SLOTS.find((part) => part.slotHash === slotHash)?.name ?? `slot ${slotHash}`;
+
+    // All armor in the same slot, excluding the selected exotic
+    const allAlternatives = context.gearOptions.filter((item) =>
+      item.category === "armor" && item.slotHash === slotHash &&
+      item.itemInstanceId !== exotic.itemInstanceId);
+
+    // Progressive filters
+    const withInstanceId = allAlternatives.filter((item) => item.itemInstanceId !== null);
+    const notAlreadyUsed = withInstanceId.filter((item) => !usedInstances.has(item.itemInstanceId!));
+    const eligibleCandidate = notAlreadyUsed.filter((item) => item.eligibility === "candidate");
+    const positionConfirmed = eligibleCandidate.filter((item) => item.positionStatus === "confirmed");
+    const confirmedNonExotic = positionConfirmed.filter((item) => item.armorMetadata?.exotic === false);
+    const detailVerified = confirmedNonExotic.filter((item) => item.detailCoverage === "verified");
+    const fullyQualified = detailVerified; // All requirements applied
+
+    // Independent exclusion reasons (for diagnostics, starting from allAlternatives)
+    const excludedInstanceId = allAlternatives.filter((item) => item.itemInstanceId === null).length;
+    const excludedAlreadyUsed = allAlternatives.filter((item) =>
+      item.itemInstanceId !== null && usedInstances.has(item.itemInstanceId)).length;
+    const excludedNotCandidate = allAlternatives.filter((item) => item.eligibility !== "candidate").length;
+    const excludedNotConfirmed = allAlternatives.filter((item) => item.positionStatus !== "confirmed").length;
+    const excludedUnknownRarity = allAlternatives.filter((item) => item.armorMetadata?.exotic === null).length;
+    const excludedNotVerified = allAlternatives.filter((item) => item.detailCoverage !== "verified").length;
+
+    diagnostics.push({
+      exoticName: exotic.name,
+      slotName,
+      slotHash: slotHash!,
+      totalAlternatives: allAlternatives.length,
+      withInstanceId: withInstanceId.length,
+      notAlreadyUsed: notAlreadyUsed.length,
+      eligibleCandidate: eligibleCandidate.length,
+      positionConfirmed: positionConfirmed.length,
+      confirmedNonExotic: confirmedNonExotic.length,
+      detailVerified: detailVerified.length,
+      fullyQualified: fullyQualified.length,
+      excludedInstanceId,
+      excludedAlreadyUsed,
+      excludedNotCandidate,
+      excludedNotConfirmed,
+      excludedUnknownRarity,
+      excludedNotVerified,
+    });
+  }
+
+  return diagnostics;
+}
+
+/**
  * 8R.6.3C5A — bounded AI hypotheses + local exotic legality reconciliation.
  * Builder Preview apply remains disabled: a preflight is NOT whole-build validation.
  * Calls are user-triggered; incomplete coverage remains explicit.
  */
-function FullBuildCandidatesPanel({ data }: { data: UniversalPlanningContext }) {
+function FullBuildCandidatesPanel({ data, characterId, details, setDetails, updateArmorCacheStatus, resolveExoticReplacementDetails, exoticReplacementLoading, exoticReplacementError }: {
+  data: UniversalPlanningContext;
+  characterId: string;
+  details: Record<string, ItemDetail>;
+  setDetails: React.Dispatch<React.SetStateAction<Record<string, ItemDetail>>>;
+  updateArmorCacheStatus: (status: ReturnType<typeof cacheFetchedArmorDetails>) => void;
+  resolveExoticReplacementDetails: (slotHash: number) => Promise<void>;
+  exoticReplacementLoading: boolean;
+  exoticReplacementError: string;
+}) {
   const [subclassChoice, setSubclassChoice] = useState("any");
   const [perkChoice, setPerkChoice] = useState("none");
   const [statChoice, setStatChoice] = useState("none");
@@ -2008,8 +2399,10 @@ function FullBuildCandidatesPanel({ data }: { data: UniversalPlanningContext }) 
         .filter((entry) => entry.status === "equipped" || entry.status === "unlocked")
         .map((entry) => entry.itemHash));
       const checked = (result.hypotheses as AiBuildHypothesis[]).map((hypothesis): CheckedAiHypothesis => {
-        const gearBySlot: Record<string, { itemInstanceId: string; itemHash: number }> = {};
-        const selectedNames: string[] = [];
+        let gearBySlot: Record<string, { itemInstanceId: string; itemHash: number }> = {};
+        let selectedNames: string[] = [];
+        let explainedSwaps: string[] = [];
+        const referencedItems: PlanningGearOption[] = [];
         let blockedReason: string | null = null;
         if (!classMatches) blockedReason = "La classe richiesta non coincide con questo Guardian.";
         if (hypothesis.subclassHash !== null && !unlockedSubclassHashes.has(hypothesis.subclassHash))
@@ -2034,14 +2427,26 @@ function FullBuildCandidatesPanel({ data }: { data: UniversalPlanningContext }) 
             blockedReason = `Riferimento ${ref} non disponibile per questo Guardian.`;
             break;
           }
-          const key = String(identity.slotHash);
-          if (gearBySlot[key]) {
-            blockedReason = `La proposta contiene due oggetti per lo stesso slot (${key}).`;
-            break;
-          }
-          gearBySlot[key] = { itemInstanceId: identity.itemInstanceId, itemHash: identity.itemHash };
-          selectedNames.push(observed.name);
+          referencedItems.push(observed);
         }
+        // Do not silently interpret every repeated slot as a valid loadout.
+        // Only a verified replacement of the CURRENT selection is unambiguous.
+        if (!blockedReason) {
+          const slots = reconcileAiSameSlotReferences(referencedItems, intent.mustKeep);
+          gearBySlot = slots.gearBySlot;
+          selectedNames = slots.selectedNames;
+          explainedSwaps = slots.explainedSwaps;
+          blockedReason = slots.blockedReason;
+        }
+        // Validate socket choices against the AI packet and live context.
+        const socketValidation = blockedReason ? null : validateAiSocketChoices(
+          hypothesis.socketChoices,
+          targetSubclass ?? null,
+          budget.packet,
+          fresh,
+        );
+        if (!blockedReason && socketValidation?.blockedReason)
+          blockedReason = socketValidation.blockedReason;
         // Missing gear slots inherit the live Builder selection; resolve the
         // implicit second Exotic BEFORE handing the selection to the validator.
         // Never weaken or bypass the independent legality checks.
@@ -2051,9 +2456,13 @@ function FullBuildCandidatesPanel({ data }: { data: UniversalPlanningContext }) 
         const validation = blockedReason ? null : evaluateFullBuildProposal(fresh, {
           ...(hypothesis.subclassHash !== null ? { subclassHash: hypothesis.subclassHash } : {}),
           gearBySlot: armorResolution?.gearBySlot ?? gearBySlot,
+          socketPlugs: socketValidation?.socketPlugs ?? {},
         });
         return { hypothesis, selectedNames,
-          automaticArmorSwaps: armorResolution?.automaticArmorSwaps ?? [], validation, blockedReason };
+          automaticArmorSwaps: [...explainedSwaps, ...(armorResolution?.automaticArmorSwaps ?? [])],
+          socketPlugs: socketValidation?.socketPlugs ?? {},
+          socketValidationMessages: socketValidation?.validationMessages ?? [],
+          validation, blockedReason };
       });
 
       const usage = result.usage && typeof result.usage === "object" ?
@@ -2095,7 +2504,7 @@ function FullBuildCandidatesPanel({ data }: { data: UniversalPlanningContext }) 
   // introduced automaticArmorSwaps. Those older evaluations did not run the
   // Exotic reconciliation, so do not render them as newly validated results.
   const legacyAiHypotheses = Boolean(aiContextResult?.hypotheses.some((entry) =>
-    !Array.isArray(entry.automaticArmorSwaps)));
+    !Array.isArray(entry.automaticArmorSwaps) || !Array.isArray(entry.socketValidationMessages)));
   return <details className="group border border-cyan-200/20 bg-[#0b1017] text-white">
     <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-3 p-4 marker:hidden [&::-webkit-details-marker]:hidden hover:bg-white/[0.025]">
       <div className="min-w-0">
@@ -2165,9 +2574,13 @@ function FullBuildCandidatesPanel({ data }: { data: UniversalPlanningContext }) 
                   <p className="leading-relaxed text-white/75">{entry.hypothesis.reason}</p>
                   <p className="text-white/50">Referenced owned items: {entry.selectedNames.join(", ") || "none; current equipment retained"}.</p>
                   {(entry.automaticArmorSwaps ?? []).length > 0 && <div className="border border-amber-200/20 bg-amber-100/[0.035] p-2 text-amber-100/80">
-                    <p className="font-semibold">Ulteriori sostituzioni necessarie per rispettare il limite di una armatura esotica:</p>
+                    <p className="font-semibold">Sostituzioni interpretate o necessarie per rispettare i vincoli di equipaggiamento:</p>
                     {(entry.automaticArmorSwaps ?? []).map((swap) => <p key={swap} className="mt-1">• {swap}</p>)}
                     <p className="mt-1 text-amber-100/60">Solo ipotesi locale: nessun oggetto viene equipaggiato. Non è una raccomandazione di prestazioni.</p>
+                  </div>}
+                  {(entry.socketValidationMessages ?? []).length > 0 && <div className="border border-cyan-200/20 bg-cyan-100/[0.035] p-2 text-cyan-100/80">
+                    <p className="font-semibold">Ability selections validated:</p>
+                    {entry.socketValidationMessages.map((msg) => <p key={msg} className="mt-1">• {msg}</p>)}
                   </div>}
                   {entry.blockedReason && <p className="text-rose-200">Blocked: {entry.blockedReason}</p>}
                   {evaluation && <>
@@ -2191,6 +2604,65 @@ function FullBuildCandidatesPanel({ data }: { data: UniversalPlanningContext }) 
           </div>
           {aiContextResult.estimatedCost !== null && <p className="text-[10px] text-white/40">Estimated API cost: ${aiContextResult.estimatedCost.toFixed(6)} USD · {aiContextResult.packetChars} JSON characters of shared context. Dashboard is authoritative.</p>}
         </div>}
+        <details className="border border-white/10 bg-[#0b1017] text-white">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-4 marker:hidden [&::-webkit-details-marker]:hidden hover:bg-white/[0.025]">
+            <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-cyan-100/80">Exotic Replacement Diagnostics (local)</p>
+            <span className="text-xs text-white/50 group-open:hidden">Expand +</span>
+            <span className="hidden text-xs text-white/50 group-open:inline">Collapse −</span>
+          </summary>
+          <div className="border-t border-white/10 p-4 text-xs">
+            {data.coverage.account !== "verified" && <p className="mb-3 text-amber-100/70">Account inventory coverage is incomplete; diagnostics are based on partial data.</p>}
+            {(() => {
+              const diagnostics = exoticReplacementDiagnostics(data);
+              if (diagnostics.length === 0) {
+                return <p className="text-white/50">No exotic armor currently selected.</p>;
+              }
+              return <div className="space-y-3">
+                {diagnostics.map((diag) => (
+                  <div key={diag.slotHash} className="border border-white/10 p-3">
+                    <div className="flex items-baseline justify-between gap-2 mb-2">
+                      <p className="font-semibold text-white/90">{diag.exoticName}</p>
+                      <p className="text-white/50">{diag.slotName}</p>
+                    </div>
+                    <div className="space-y-1 text-white/60">
+                      <p className="font-semibold text-white/90 mt-2">Progressive filters:</p>
+                      <p>Total alternatives observed: <span className="text-white/90">{diag.totalAlternatives}</span></p>
+                      <p>→ With itemInstanceId: <span className={diag.withInstanceId === diag.totalAlternatives ? "text-cyan-100" : "text-amber-200"}>{diag.withInstanceId}</span></p>
+                      <p>→ Not already used in build: <span className={diag.notAlreadyUsed === diag.withInstanceId ? "text-cyan-100" : "text-amber-200"}>{diag.notAlreadyUsed}</span></p>
+                      <p>→ Eligible candidate: <span className={diag.eligibleCandidate === diag.notAlreadyUsed ? "text-cyan-100" : "text-amber-200"}>{diag.eligibleCandidate}</span></p>
+                      <p>→ Position confirmed: <span className={diag.positionConfirmed === diag.eligibleCandidate ? "text-cyan-100" : "text-amber-200"}>{diag.positionConfirmed}</span></p>
+                      <p>→ Confirmed non-exotic: <span className={diag.confirmedNonExotic === diag.positionConfirmed ? "text-cyan-100" : "text-amber-200"}>{diag.confirmedNonExotic}</span></p>
+                      <p>→ Detail verified: <span className={diag.detailVerified === diag.confirmedNonExotic ? "text-cyan-100" : "text-amber-200"}>{diag.detailVerified}</span></p>
+                      <p className="font-semibold text-white/90 mt-2">Fully qualified for replacement: <span className={diag.fullyQualified > 0 ? "text-cyan-100" : "text-rose-200"}>{diag.fullyQualified}</span></p>
+                      {diag.fullyQualified === 0 && <div className="mt-2 space-y-1 text-amber-100/70">
+                        <p className="font-semibold">Independent exclusion reasons:</p>
+                        {diag.excludedInstanceId > 0 && <p>• Missing itemInstanceId: {diag.excludedInstanceId}</p>}
+                        {diag.excludedAlreadyUsed > 0 && <p>• Already used in another slot: {diag.excludedAlreadyUsed}</p>}
+                        {diag.excludedNotCandidate > 0 && <p>• Not eligible candidate: {diag.excludedNotCandidate}</p>}
+                        {diag.excludedNotConfirmed > 0 && <p>• Position not confirmed: {diag.excludedNotConfirmed}</p>}
+                        {diag.excludedUnknownRarity > 0 && <p>• Rarity unknown: {diag.excludedUnknownRarity}</p>}
+                        {diag.excludedNotVerified > 0 && <p>• Detail not verified: {diag.excludedNotVerified}</p>}
+                      </div>}
+                      {diag.confirmedNonExotic > 0 && diag.detailVerified < diag.confirmedNonExotic && (
+                        <div className="mt-3">
+                          <button
+                            type="button"
+                            onClick={() => void resolveExoticReplacementDetails(diag.slotHash)}
+                            disabled={exoticReplacementLoading}
+                            className="border border-cyan-200/30 bg-cyan-200/10 px-3 py-2 text-[10px] font-bold uppercase tracking-[0.12em] text-cyan-100 hover:bg-cyan-200/15 disabled:cursor-default disabled:opacity-35"
+                          >
+                            {exoticReplacementLoading ? "Loading…" : `Load Missing Replacement Details (${diag.confirmedNonExotic - diag.detailVerified})`}
+                          </button>
+                          {exoticReplacementError && <p role="alert" className="mt-2 text-xs text-rose-200">{exoticReplacementError}</p>}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>;
+            })()}
+          </div>
+        </details>
         {aiResult && <div className="space-y-1.5 border border-white/10 bg-black/20 p-3 text-xs">
           <p className="font-semibold text-white/85">Interpreted: {aiResult.intent.guardianClass} · {aiResult.intent.element} · {aiResult.intent.playstyle || "unspecified style"}</p>
           <p className="text-white/55">Activity: {aiResult.intent.activity} · Stat preferences: {aiResult.intent.armorStatPriorities.join(", ") || "not specified"}</p>
@@ -3649,3 +4121,4 @@ function CandidateEvidenceCard({ evidence }: {evidence: CandidateEvidence}) {
     <p className="mt-1.5 whitespace-pre-line break-words text-[11px] leading-relaxed text-white/50">{evidence.description || "Perk description unavailable; tagged effect requires further verification."}</p>
   </div>;
 }
+ 

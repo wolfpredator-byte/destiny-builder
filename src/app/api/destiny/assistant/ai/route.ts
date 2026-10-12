@@ -109,8 +109,16 @@ const CONTEXT_SCHEMA = {
         reason: { type: "string" },
         tradeoffs: { type: "array", items: { type: "string" } },
         unknowns: { type: "array", items: { type: "string" } },
+        socketChoices: { type: "array", items: {
+          type: "object", additionalProperties: false,
+          properties: {
+            socketIndex: { type: "integer" },
+            plugHash: { type: "integer" },
+          },
+          required: ["socketIndex", "plugHash"],
+        } },
       },
-      required: ["title", "subclassHash", "gearRefs", "reason", "tradeoffs", "unknowns"],
+      required: ["title", "subclassHash", "gearRefs", "reason", "tradeoffs", "unknowns", "socketChoices"],
     } },
   },
   required: ["intent", "hypotheses"],
@@ -302,6 +310,7 @@ type AiHypothesis = {
   reason: string;
   tradeoffs: string[];
   unknowns: string[];
+  socketChoices?: Array<{ socketIndex: number; plugHash: number }>;
 };
 function validContextResult(value: unknown, packet: Dict): value is { intent: PlannerIntent; hypotheses: AiHypothesis[] } {
   if (!record(value) || !keys(value, ["intent", "hypotheses"]) || Object.keys(value).length !== 2 ||
@@ -311,14 +320,90 @@ function validContextResult(value: unknown, packet: Dict): value is { intent: Pl
     .filter((s) => s.status === "equipped" || s.status === "unlocked")
     .map((s) => Number(s.hash)));
   for (const h of value.hypotheses) {
-    if (!record(h) || !keys(h, ["title", "subclassHash", "gearRefs", "reason", "tradeoffs", "unknowns"]) ||
-        Object.keys(h).length !== 6 || !str(h.title, 90) || !str(h.reason, 420) ||
+    const allowedKeys = ["title", "subclassHash", "gearRefs", "reason", "tradeoffs", "unknowns", "socketChoices"];
+    if (!record(h) || !keys(h, allowedKeys) ||
+        (Object.keys(h).length !== 6 && Object.keys(h).length !== 7) ||
+        !str(h.title, 90) || !str(h.reason, 420) ||
         !strings(h.gearRefs, 8, 3) || new Set(h.gearRefs).size !== h.gearRefs.length ||
         !h.gearRefs.every((ref) => refs.has(ref)) ||
         (h.subclassHash !== null && (!uint(h.subclassHash) || !subclassHashes.has(h.subclassHash))) ||
         !strings(h.tradeoffs, 4, 150) || !strings(h.unknowns, 4, 150)) return false;
+    // The provider always returns socketChoices (possibly []), but retain support
+    // for older saved/model responses with this field absent.
+    if (h.socketChoices !== undefined) {
+      if (!array(h.socketChoices, 20)) return false;
+      if (h.socketChoices.length > 0) {
+        const subclasses = packet.subclasses as Dict[];
+        const chosenSubclass = h.subclassHash === null
+          ? subclasses.find((s) => s.selected === true)
+          : subclasses.find((s) => s.hash === h.subclassHash);
+        // Unknown/incomplete socket data must never become proof of availability.
+        if (!chosenSubclass || chosenSubclass.setupKnown !== true ||
+            chosenSubclass.socketsIncluded !== true || !array(chosenSubclass.sockets, 15)) return false;
+        const usedSocketIndices = new Set<number>();
+        const usedPlugHashes = new Set<number>();
+        for (const choice of h.socketChoices) {
+          if (!record(choice) || !keys(choice, ["socketIndex", "plugHash"]) ||
+              !uint(choice.socketIndex, 200) || !uint(choice.plugHash) || choice.plugHash === 0 ||
+              usedSocketIndices.has(choice.socketIndex)) return false;
+          const socket = (chosenSubclass.sockets as Dict[]).find((s) => s.index === choice.socketIndex);
+          if (!socket || !array(socket.options, 5)) return false;
+          const plug = (socket.options as Dict[]).find((o) => o.hash === choice.plugHash);
+          if (!plug || (plug.status !== "equipped" && plug.status !== "unlocked")) return false;
+          if (/aspect|fragment/i.test(String(socket.type)) && usedPlugHashes.has(choice.plugHash)) return false;
+          usedSocketIndices.add(choice.socketIndex);
+          usedPlugHashes.add(choice.plugHash);
+        }
+      }
+    }
   }
   return true;
+}
+
+
+/**
+ * C5D2 — Keep independently grounded hypotheses when the provider returns
+ * a mixed-quality response. Never forward an invalid gear/subclass reference.
+ * Invalid ability sets are removed as a WHOLE and explicitly flagged unknown;
+ * they are never silently reinterpreted as unlocked/selected.
+ */
+function reconcileContextHypotheses(
+  value: unknown, packet: Dict,
+): { intent: PlannerIntent; hypotheses: AiHypothesis[];
+     rejected: number; abilitySetsOmitted: number } | null {
+  if (!record(value) || !keys(value, ["intent", "hypotheses"]) || Object.keys(value).length !== 2 ||
+      !isPlannerIntent(value.intent) || !Array.isArray(value.hypotheses)) return null;
+
+  // Even an unexpectedly long model array cannot exceed our local output limit.
+  if (value.hypotheses.length > 10) return null;
+  const intent = value.intent;
+  const hypotheses: AiHypothesis[] = [];
+  let rejected = value.hypotheses.length > 3 ? value.hypotheses.length - 3 : 0;
+  let abilitySetsOmitted = 0;
+  const isValidSingle = (item: unknown): item is AiHypothesis =>
+    validContextResult({ intent, hypotheses: [item] }, packet);
+
+  for (const item of value.hypotheses.slice(0, 3)) {
+    if (isValidSingle(item)) {
+      hypotheses.push(item);
+      continue;
+    }
+    if (record(item) && Array.isArray(item.socketChoices) && item.socketChoices.length > 0 &&
+        Array.isArray(item.unknowns) && item.unknowns.length <= 4) {
+      const notice = "Scelte abilità AI omesse: dati socket/sblocco non verificabili.";
+      const unknowns = [...item.unknowns.slice(0, 3), notice];
+      const downgraded = { ...item, socketChoices: [], unknowns };
+      if (isValidSingle(downgraded)) {
+        hypotheses.push(downgraded);
+        abilitySetsOmitted++;
+        continue;
+      }
+    }
+    // Invalid equipment references, subclasses, field shapes or bounds are
+    // discarded, not clipped into apparently valid evidence.
+    rejected++;
+  }
+  return { intent, hypotheses, rejected, abilitySetsOmitted };
 }
 
 const CONTEXT_INSTRUCTIONS = [
@@ -331,6 +416,13 @@ const CONTEXT_INSTRUCTIONS = [
   "Non inventare perk selezionati, proprietà, sblocchi, statistiche o dati di gameplay. Nessuna operazione di equipaggiamento.",
   "Non considerare gli oggetti omessi dal pacchetto come non posseduti.",
   "Prediligi risposte brevi in italiano e un numero basso di ipotesi pertinenti.",
+  "Vincoli di dimensione per OGNI ipotesi: titolo <=90 caratteri, reason <=420, max 8 gearRefs, max 4 tradeoffs da <=150 caratteri e max 4 unknowns da <=150.",
+  "Per l'intento: playstyle <=250 caratteri, explanation <=400, max 6 armorStatPriorities, max 8 desiredMechanics da <=90 caratteri, max 6 mustKeep da <=90.",
+  "In ogni ipotesi restituisci socketChoices (usa [] se nessuna selezione è verificabile); usa solo coppie socketIndex/plugHash osservate nel pacchetto della sottoclasse proposta.",
+  "Scegli solo opzioni con status 'equipped' o 'unlocked'; evita 'locked', 'unknown' o 'possible_unverified'.",
+  "Non duplicare socketIndex né usare lo stesso aspect/fragment in slot multipli quando ciò viola i vincoli.",
+  "Se la sottoclasse proposta ha dati insufficienti (setupKnown=false, sockets vuoti o non inclusi), usa socketChoices: [].",
+  "Non superare 20 socketChoices per ipotesi; preferisci poche scelte pertinenti piuttosto che riempire tutti gli slot.",
 ].join(" ");
 
 function onlyLocalDev(request: Request): boolean {
@@ -471,13 +563,18 @@ export async function POST(request: Request): Promise<Response> {
     }
     if (textParts.length !== 1) throw new Error("no structured response");
     const parsedAnswer: unknown = JSON.parse(textParts[0]);
-    if (withContext && (!packet || !validContextResult(parsedAnswer, packet)))
-      throw new Error("unverifiable context response");
+    // Coarse diagnostics only: never log or echo provider output or user data.
+    if (withContext && (!record(parsedAnswer) || !isPlannerIntent(parsedAnswer.intent)))
+      throw new Error("unverifiable context intent");
+    if (withContext && (!record(parsedAnswer) || !Array.isArray(parsedAnswer.hypotheses)))
+      throw new Error("unverifiable context hypotheses shape");
+    // Validate every proposed loadout independently. One invalid generated
+    // hypothesis must not erase other verified starting points.
+    const reviewed = withContext && packet ? reconcileContextHypotheses(parsedAnswer, packet) : null;
+    if (withContext && !reviewed) throw new Error("unverifiable context response");
     if (!withContext && !isPlannerIntent(parsedAnswer)) throw new Error("invalid intent response");
-    const intent: PlannerIntent = withContext
-      ? (parsedAnswer as { intent: PlannerIntent }).intent : parsedAnswer as PlannerIntent;
-    const hypotheses: AiHypothesis[] = withContext
-      ? (parsedAnswer as { hypotheses: AiHypothesis[] }).hypotheses : [];
+    const intent: PlannerIntent = withContext ? reviewed!.intent : parsedAnswer as PlannerIntent;
+    const hypotheses: AiHypothesis[] = withContext ? reviewed!.hypotheses : [];
     const usage = response.usage as Record<string, unknown> | undefined;
     const inputTokens = usage?.input_tokens;
     const outputTokens = usage?.output_tokens;
@@ -493,16 +590,37 @@ export async function POST(request: Request): Promise<Response> {
       intent, ...(withContext ? { hypotheses, coverage: {
         gearReceived: (packet!.gear as unknown[]).length,
         contextTruncated: (packet!.gaps as string[]).some((g) => g.includes("Subset")),
+        invalidHypothesesDiscarded: reviewed!.rejected,
+        unverifiedAbilitySetsOmitted: reviewed!.abilitySetsOmitted,
       } } : {}), validatedBuild: false, appliedToPreview: false,
       usage: { inputTokens: typeof inputTokens === "number" ? inputTokens : null,
         outputTokens: typeof outputTokens === "number" ? outputTokens : null,
         costEstimateUsd },
       warning: withContext
-        ? "Solo ipotesi su un estratto dell'inventario: il Planner deve verificare OGNI riferimento sul Guardian corrente prima di mostrare o applicare una build."
+        ? (reviewed!.rejected || reviewed!.abilitySetsOmitted
+          ? `Risultato parziale: ${reviewed!.rejected} ipotesi scartate e ${reviewed!.abilitySetsOmitted} set di abilità omessi perché non verificabili. Nessuna selezione omessa è stata convalidata.`
+          : "Solo ipotesi su un estratto dell'inventario: il Planner deve verificare OGNI riferimento sul Guardian corrente prima di mostrare o applicare una build.")
         : "Solo interpretazione della richiesta: inventario, perk e sinergie saranno verificati in una fase successiva.",
     });
-  } catch {
-    return json({ success: false, error: "Errore, risposta non verificabile o timeout AI. Nessuna modifica alla build." }, 502);
+  } catch (reason: unknown) {
+    // C5D1: Error categories only. NEVER log model output, packet content,
+    // user goals, item/character IDs, API credentials or exception messages.
+    const diagnosticCode = reason instanceof Error &&
+      (reason.name === "TimeoutError" || reason.name === "AbortError") ? "provider_timeout" :
+      reason instanceof SyntaxError ? "invalid_json" :
+      reason instanceof Error && reason.message === "unverifiable context intent" ? "context_intent_invalid" :
+      reason instanceof Error && reason.message === "unverifiable context hypotheses shape" ? "context_hypotheses_shape_invalid" :
+      reason instanceof Error && reason.message === "unverifiable context response" ? "context_validation_failed" :
+      reason instanceof Error && reason.message === "no structured response" ? "missing_output_text" :
+      reason instanceof Error && reason.message === "invalid intent response" ? "intent_validation_failed" :
+      reason instanceof Error && reason.message === "invalid provider response" ? "invalid_provider_envelope" :
+      "unexpected_processing_error";
+    console.warn(`[Destiny AI] request rejected: ${diagnosticCode}`);
+    return json({
+      success: false,
+      error: `Analisi AI non completata (${diagnosticCode}). Nessuna modifica alla build.`,
+      diagnosticCode,
+    }, 502);
   } finally {
     guard.inFlight = false;
   }

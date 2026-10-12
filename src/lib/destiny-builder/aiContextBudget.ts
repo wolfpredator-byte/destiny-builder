@@ -179,14 +179,35 @@ function choosePerks(item: PlanningGearOption, terms: readonly string[]) {
     a.plugHash - b.plugHash).slice(0, MAX_PERKS);
 }
 
-function requestedSubclassElements(goal: string): Set<string> {
+/** Match explicit elements and observed subclass names, not generic combat words. */
+function requestedSubclassElements(
+  goal: string,
+  subclasses: UniversalPlanningContext["subclasses"],
+): Set<string> {
   const text = normalizedText(goal);
-  const aliases: Record<string, RegExp> = {
-    Arc: /\barc\b/, Solar: /\bsolar\b|\bsolare\b/, Void: /\bvoid\b|\bvuoto\b/,
-    Stasis: /\bstasis\b|\bstasi\b/, Strand: /\bstrand\b|\btela\s+scura\b/,
+  const explicitElements: Record<string, RegExp> = {
+    Arc: /\barc\b/,
+    Solar: /\bsolar\b|\bsolare\b/,
+    Void: /\bvoid\b|\bvuoto\b/,
+    Stasis: /\bstasis\b|\bstasi\b/,
+    Strand: /\bstrand\b|\btela\s+scura\b/,
     Prismatic: /\bprismatic\w*\b|\bprismatico\b/,
   };
-  return new Set(Object.entries(aliases).filter(([, expr]) => expr.test(text)).map(([key]) => key));
+  const found = new Set(
+    Object.entries(explicitElements)
+      .filter(([, expression]) => expression.test(text))
+      .map(([element]) => element),
+  );
+  // Names come from this Guardian's observed subclasses, not a hardcoded
+  // keyword list that could confuse weapon names or combat effects with classes.
+  for (const subclass of subclasses) {
+    const name = normalizedText(subclass.name).trim();
+    if (name.length < 4) continue;
+    const literal = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const namePattern = new RegExp(`(^|[^a-z0-9])${literal}(?=$|[^a-z0-9])`);
+    if (namePattern.test(text)) found.add(subclass.element);
+  }
+  return found;
 }
 export function buildBudgetedAiContext(context: UniversalPlanningContext, userGoal: string): AiContextBudgetResult {
   const goal = userGoal.trim();
@@ -214,7 +235,7 @@ export function buildBudgetedAiContext(context: UniversalPlanningContext, userGo
     };
   });
 
-  const requestedElements = requestedSubclassElements(goal);
+  const requestedElements = requestedSubclassElements(goal, context.subclasses);
   const packet: SharedAiPacket = {
     version: 1,
     purpose: "hypotheses_only_require_live_validation",
@@ -234,7 +255,12 @@ export function buildBudgetedAiContext(context: UniversalPlanningContext, userGo
       Number(requestedElements.has(b.element)) - Number(requestedElements.has(a.element)) ||
       Number(b.selectedInBuild) - Number(a.selectedInBuild) || a.name.localeCompare(b.name))
       .slice(0, MAX_SUBCLASSES).map((subclass) => {
-        const include = subclass.selectedInBuild || requestedElements.has(subclass.element);
+        const isRequested = requestedElements.has(subclass.element);
+        const isEquipped = subclass.selectedInBuild;
+        const include = isEquipped || isRequested;
+        // Explicitly requested subclass gets full socket options; equipped subclass
+        // gets reduced options only when a different element was requested.
+        const preserveOptions = isRequested || !isEquipped || requestedElements.size === 0;
         return {
           hash: subclass.itemHash,
           name: clamp(subclass.name, 44), element: clamp(subclass.element, 20),
@@ -248,10 +274,9 @@ export function buildBudgetedAiContext(context: UniversalPlanningContext, userGo
                 Number(a.status === "unlocked" || a.status === "equipped") ||
               textMatches(b.description, terms) - textMatches(a.description, terms) ||
               a.plugHash - b.plugHash)
-              // If another subclass was requested, the current setup is baseline
-              // context; keep its equipped choices rather than every alternative.
-              .slice(0, subclass.selectedInBuild && requestedElements.size > 0 &&
-                !requestedElements.has(subclass.element) ? 1 : Math.min(3, MAX_CHOICES_PER_SOCKET))
+              // Preserve selected choices for requested subclasses; reduce baseline
+              // equipped options only when a different element is explicitly requested.
+              .slice(0, preserveOptions ? Math.min(3, MAX_CHOICES_PER_SOCKET) : 1)
               .map((option) => ({
                 hash: option.plugHash, name: clamp(option.name, 44), selected: option.selectedInBuild,
                 status: option.status, description: clamp(option.description, 70),
