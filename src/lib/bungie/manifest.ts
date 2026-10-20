@@ -6,7 +6,8 @@ import { BUNGIE_API_ROOT } from "./config";
 type ManifestDefinitionType =
   | "DestinyInventoryItemDefinition"
   | "DestinyStatDefinition"
-  | "DestinyPlugSetDefinition";
+  | "DestinyPlugSetDefinition"
+  | "DestinySocketTypeDefinition";
 
 type MemoryCacheEntry = {
   expiresAt: number;
@@ -230,4 +231,16 @@ export async function getManifestDefinition(
 
 export async function getInventoryItemDefinition(itemHash: number, apiKey: string) {
   return getManifestDefinition("DestinyInventoryItemDefinition", itemHash, apiKey);
+}
+
+/**
+ * Engine-B0.5c3d2a — Version-aware socket type Manifest lookup.
+ * This returns STATIC definition evidence only. A plugWhitelist match is not
+ * per-instance insertability, ownership, unlock, or energy certification.
+ */
+export async function getSocketTypeDefinition(socketTypeHash: number, apiKey: string) {
+  if (!Number.isSafeInteger(socketTypeHash) || socketTypeHash <= 0 || socketTypeHash > 0xffffffff) {
+    throw new Error("Invalid DestinySocketTypeDefinition hash");
+  }
+  return getManifestDefinition("DestinySocketTypeDefinition", socketTypeHash, apiKey);
 }

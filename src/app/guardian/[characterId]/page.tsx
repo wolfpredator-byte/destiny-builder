@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import AppShell from "@/components/destiny-builder/AppShell";
+import { resolveSharedItemDetail, sharedItemCacheUrl } from "@/lib/destiny-builder/sharedItemDetailCache";
 
 type Character = {
   characterId: string;
@@ -731,7 +732,7 @@ export default function GuardianPage() {
         continue;
       }
 
-      if (!detailCacheRef.current[item.itemInstanceId]) {
+      if (detailCacheRef.current[item.itemInstanceId]?.itemHash !== item.itemHash) {
         void ensureItemDetail(item);
       }
     }
@@ -1593,51 +1594,48 @@ const ensureItemDetail = async (
   const key = item.itemInstanceId;
   const cached = detailCacheRef.current[key];
 
-  if (!force && cached) {
+  if (!force && cached?.itemHash === item.itemHash) {
     return cached;
   }
 
-  // Forced auto-sync refreshes stale detail data in the background. Keep the
-  // current snapshot rendered until the fresh Bungie response replaces it so
-  // an open inspector never flashes empty every sync cycle.
+  // Bungie Sync explicitly forces live; ordinary Inspect/Builder reads SQLite
+  // first. This does not launch any background account-wide fetch.
   if (detailLoadingIds[key]) {
-    return cached ?? null;
+    return cached?.itemHash === item.itemHash ? cached : null;
   }
 
-  setDetailLoadingIds((current) => ({
-    ...current,
-    [key]: true,
-  }));
+  setDetailLoadingIds((current) => ({ ...current, [key]: true }));
 
   try {
-    const response = await fetch(
-      `/api/destiny/characters/${characterId}/inventory?scope=detail&itemInstanceId=${encodeURIComponent(
-        item.itemInstanceId
-      )}&itemHash=${item.itemHash}`,
-      { cache: "no-store" }
-    );
-
-    const data = await response.json().catch(() => null);
-
-    if (response.status === 401) {
-      const refreshResponse = await fetch(
-        "/api/auth/refresh",
-        { method: "POST" }
-      );
-
-      if (refreshResponse.ok) {
-        window.location.reload();
-        return null;
-      }
-    }
-
-    if (!response.ok || !data?.success || !data?.item) {
-      throw new Error(
-        data?.error || "Failed to load item details"
-      );
-    }
-
-    const detail = data.item as ItemDetail;
+    const identity = { itemInstanceId: key, itemHash: item.itemHash };
+    const resolved = await resolveSharedItemDetail(identity, {
+      forceLive: force,
+      readCache: async () => {
+        const response = await fetch(sharedItemCacheUrl(characterId, identity), { cache: "no-store" });
+        const data = await response.json().catch(() => null);
+        if (!response.ok || !data?.success) throw new Error("Detail cache unavailable");
+        return data;
+      },
+      readLive: async () => {
+        const response = await fetch(
+          `/api/destiny/characters/${encodeURIComponent(characterId)}/inventory?scope=detail&itemInstanceId=${encodeURIComponent(key)}&itemHash=${item.itemHash}`,
+          { cache: "no-store" }
+        );
+        const data = await response.json().catch(() => null);
+        if (response.status === 401) {
+          const refreshed = await fetch("/api/auth/refresh", { method: "POST" });
+          if (refreshed.ok) {
+            window.location.reload();
+            throw new Error("Session refresh underway");
+          }
+        }
+        if (!response.ok || !data?.success || !data?.item) {
+          throw new Error(data?.error || "Failed to load item details");
+        }
+        return data.item;
+      },
+    });
+    const detail = resolved.detail as ItemDetail;
     detailCacheRef.current[key] = detail;
     setItemDetails((current) => ({
       ...current,
@@ -1752,7 +1750,8 @@ const getCachedDetail = (
     return null;
   }
 
-  return itemDetails[item.itemInstanceId] ?? null;
+  const detail = itemDetails[item.itemInstanceId];
+  return detail?.itemHash === item.itemHash ? detail : null;
 };
 
 const saveBuilderLoadout = () => {

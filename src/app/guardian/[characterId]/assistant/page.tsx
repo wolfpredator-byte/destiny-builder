@@ -525,6 +525,12 @@ export default function BuildEnginePreviewPage() {
   const [armorWeights, setArmorWeights] = useState<Record<number, number>>({
     1735777505: 5, 392767087: 3, 2996146975: 1,
   });
+  // UI-Armor-A1: a visible DIM-like ordering separate from the numeric ranking weights.
+  // Preserve the existing starting weights until the user changes a priority.
+  const [armorPriorityOrder, setArmorPriorityOrder] = useState<number[]>(() =>
+    [...ARMOR_3_STATS]
+      .sort((a, b) => (armorWeights[b.statHash] ?? 0) - (armorWeights[a.statHash] ?? 0))
+      .map((stat) => stat.statHash));
   const [armorMinimums, setArmorMinimums] = useState<Record<number, number>>({});
   // 8R.4.3: explicit trade-off preferences; omitted hash means NO protection,
   // whereas a configured value of 0 means NO LOSS is permitted for that stat.
@@ -809,6 +815,22 @@ export default function BuildEnginePreviewPage() {
     setArmorSearch(null);
     setArmorPendingId(null);
     setArmorPreviewFeedback(null);
+  };
+
+  // Every reorder/toggle updates the *actual* optimizer weights once (0 = excluded).
+  // Six enabled stats receive distinct weights 6..1; disabled stats always receive 0.
+  // Existing 5/3/1 defaults are left untouched until the first deliberate change.
+  const updateArmorStatPriorities = (order: readonly number[], enabled: ReadonlySet<number>) => {
+    const active = order.filter((hash) => enabled.has(hash));
+    if (active.length === 0) return; // At least one optimization target must remain.
+    const next: Record<number, number> = {};
+    order.forEach((hash) => {
+      const index = active.indexOf(hash);
+      next[hash] = index < 0 ? 0 : 6 - index;
+    });
+    setArmorPriorityOrder([...order]);
+    setArmorWeights(next);
+    invalidateArmorSearch();
   };
 
   const getArmorSearchRequest = (): ArmorOptimizationRequest | null => {
@@ -1428,6 +1450,7 @@ export default function BuildEnginePreviewPage() {
                 cacheStatus={armorCacheStatus}
                 availableSets={availableArmorSets}
                 weights={armorWeights}
+                priorityOrder={armorPriorityOrder}
                 minimums={armorMinimums}
                 maxStatLosses={armorMaxStatLosses}
                 lossAversion={armorLossAversion}
@@ -1452,8 +1475,20 @@ export default function BuildEnginePreviewPage() {
                 lockedIds={armorLockedIds}
                 requiredSet={armorRequiredSet}
                 requiredPieces={armorRequiredPieces}
-                onWeightChange={(hash, value) => {
-                  setArmorWeights((old) => ({ ...old, [hash]: value })); invalidateArmorSearch();
+                onPriorityMove={(hash, direction) => {
+                  const index = armorPriorityOrder.indexOf(hash);
+                  const nextIndex = index + direction;
+                  if (index < 0 || nextIndex < 0 || nextIndex >= armorPriorityOrder.length) return;
+                  const nextOrder = [...armorPriorityOrder];
+                  [nextOrder[index], nextOrder[nextIndex]] = [nextOrder[nextIndex], nextOrder[index]];
+                  updateArmorStatPriorities(nextOrder,
+                    new Set(armorPriorityOrder.filter((entry) => (armorWeights[entry] ?? 0) > 0)));
+                }}
+                onPriorityEnabledChange={(hash, enabled) => {
+                  const active = new Set(armorPriorityOrder.filter((entry) => (armorWeights[entry] ?? 0) > 0));
+                  if (enabled) active.add(hash);
+                  else active.delete(hash);
+                  updateArmorStatPriorities(armorPriorityOrder, active);
                 }}
                 onMinimumChange={(hash, value) => {
                   setArmorMinimums((old) => ({ ...old, [hash]: value })); invalidateArmorSearch();
@@ -3433,12 +3468,12 @@ function RecommendationExplorer({
 /** Phase 8R.4.3 — explicit trade-off-aware, bounded, owned-only Armor Optimizer interface.
  * UI is an inspection and explicit local-preview surface, never an equip action.
  */
-function ArmorOptimizerPanel({ context, report, cacheStatus, availableSets, weights, minimums, maxStatLosses,
+function ArmorOptimizerPanel({ context, report, cacheStatus, availableSets, weights, priorityOrder, minimums, maxStatLosses,
   lossAversion, mechanicsReport, protectedMechanicIds, protectedChainIds,
   mechanicLossCost, chainLossCost, setLossCost,
   onProtectedMechanicChange, onProtectedChainChange,
   onMechanicLossCost, onChainLossCost, onSetLossCost, keepExotic, lockedIds,
-  requiredSet, requiredPieces, onWeightChange, onMinimumChange, onMaxStatLossChange,
+  requiredSet, requiredPieces, onPriorityMove, onPriorityEnabledChange, onMinimumChange, onMaxStatLossChange,
   onLossAversion, onKeepExotic, onLockedChange,
   onRequiredSet, onRequiredPieces, onSearch, onContinue, onStop, autoProgress, loading, detailsBusy,
   loadError, accountReady, pendingId, feedback, onSelectResult, onCancelResult, onConfirmResult,
@@ -3448,6 +3483,7 @@ function ArmorOptimizerPanel({ context, report, cacheStatus, availableSets, weig
   cacheStatus: ArmorCacheStatus;
   availableSets: Array<[number, string]>;
   weights: Record<number, number>;
+  priorityOrder: number[];
   minimums: Record<number, number>;
   maxStatLosses: Record<number, number>;
   lossAversion: number;
@@ -3466,7 +3502,8 @@ function ArmorOptimizerPanel({ context, report, cacheStatus, availableSets, weig
   lockedIds: string[];
   requiredSet: string;
   requiredPieces: number;
-  onWeightChange: (hash: number, weight: number) => void;
+  onPriorityMove: (hash: number, direction: -1 | 1) => void;
+  onPriorityEnabledChange: (hash: number, enabled: boolean) => void;
   onMinimumChange: (hash: number, value: number) => void;
   onMaxStatLossChange: (hash: number, value: number | null) => void;
   onLossAversion: (value: number) => void;
@@ -3500,6 +3537,7 @@ function ArmorOptimizerPanel({ context, report, cacheStatus, availableSets, weig
     protectedChainIds.filter((id) => activeChainIds.has(id)).length;
   const optionalCosts = mechanicLossCost + chainLossCost + setLossCost;
   const tradeoffReady = baselineReady || !hasLossRules;
+  const activeArmorPriorities = priorityOrder.filter((hash) => (weights[hash] ?? 0) > 0).length;
   const phaseTitle = "text-[10px] font-black uppercase tracking-[0.15em] text-cyan-200/65";
   return <section id="armor-optimizer" aria-labelledby="armor-opt-heading" className="min-w-0 border border-cyan-200/25 bg-[#091119]">
     <div className="border-b border-white/10 bg-[radial-gradient(circle_at_90%_10%,rgba(45,212,191,0.10),transparent_55%)] p-4 sm:p-5">
@@ -3519,33 +3557,65 @@ function ArmorOptimizerPanel({ context, report, cacheStatus, availableSets, weig
       </label>
       <div className="space-y-3">
         <div className="min-w-0 space-y-3 border border-white/10 bg-black/15 p-3">
-          <p className={phaseTitle}>Stat priorities &amp; minimum armor-item totals</p>
-          <p className="text-[11px] text-white/40">0 ignores a stat. Higher numbers prioritize it; minimums are optional.</p>
-          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-            {ARMOR_3_STATS.map((stat) => <label key={stat.statHash} className="flex items-center justify-between gap-3 border border-white/10 bg-[#0c131c] px-3 py-2 text-xs">
-              <span className="font-semibold text-white/80">{stat.name}</span>
-              <select aria-label={`${stat.name} importance`} value={weights[stat.statHash] ?? 0}
-                onChange={(event: ChangeEvent<HTMLSelectElement>) => onWeightChange(stat.statHash, Number(event.target.value))}
-                className="w-16 shrink-0 border border-white/15 bg-[#131c28] px-2 py-1.5 text-xs font-bold text-white">
-                {Array.from({length: 11}, (_, i) => <option key={i} value={i}>{i}</option>)}
-              </select>
-            </label>)}
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className={phaseTitle}>Stat priorities &amp; ranges · DIM-style</p>
+            <span className="text-[10px] font-semibold tabular-nums text-cyan-100/70">{activeArmorPriorities}/6 prioritized</span>
           </div>
-          <details className="border-t border-white/10 pt-3">
-            <summary className="cursor-pointer text-xs font-semibold text-white/65">Minimum stat requirements · optional</summary>
-            <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-              {ARMOR_3_STATS.map((stat) => <label key={stat.statHash} className="flex items-center justify-between gap-3 border border-white/10 p-2 text-xs text-white/70">
-                {stat.name}
-                <input type="number" min={0} max={500} step={1} value={minimums[stat.statHash] ?? 0}
-                  onChange={(event: ChangeEvent<HTMLInputElement>) => {
-                    const parsed = Number(event.target.value);
-                    onMinimumChange(stat.statHash, Number.isFinite(parsed) ? Math.max(0, Math.min(500, Math.trunc(parsed))) : 0);
-                  }}
-                  className="w-20 border border-white/15 bg-[#131c28] p-1.5 text-xs tabular-nums text-white"/>
-              </label>)}
-            </div>
-            <p className="mt-2 text-[10px] text-white/40">Zero means no minimum. These are item-level armor totals, not final Guardian stats.</p>
-          </details>
+          <p className="text-[11px] leading-relaxed text-white/50">
+            Use the arrows to change ranking priority. Uncheck a stat to give it weight 0.
+            Minimums remain hard requirements even for unchecked stats; clear the minimum to remove that restriction.
+            At least one stat must stay prioritized.
+          </p>
+          <div className="max-w-3xl space-y-1.5" aria-label="Armor 3.0 priority order and minimums">
+            {priorityOrder.map((hash, index) => {
+              const stat = ARMOR_3_STATS.find((entry) => entry.statHash === hash);
+              if (!stat) return null;
+              const weight = weights[hash] ?? 0;
+              const enabled = weight > 0;
+              const minimum = minimums[hash] ?? 0;
+              const lastActive = enabled && activeArmorPriorities === 1;
+              const minimumId = `armor-min-${hash}`;
+              return <div key={hash} className={`border px-3 py-2.5 ${enabled ? "border-cyan-200/20 bg-[#0c1720]" : "border-white/10 bg-[#0b1017] opacity-75"}`}>
+                <div className="flex items-center gap-2">
+                  <span aria-hidden="true" className="w-5 shrink-0 text-center text-[10px] tabular-nums text-white/35">{index + 1}</span>
+                  <input type="checkbox" aria-label={`Prioritize ${stat.name}`} checked={enabled}
+                    disabled={lastActive} title={lastActive ? "Keep at least one priority active" : undefined}
+                    onChange={(event: ChangeEvent<HTMLInputElement>) => onPriorityEnabledChange(hash, event.target.checked)}
+                    className="h-4 w-4 accent-cyan-300 disabled:opacity-50" />
+                  <span className={`min-w-0 flex-1 text-xs font-bold ${enabled ? "text-white/90" : "text-white/50"}`}>
+                    {stat.name}
+                  </span>
+                  <span className="shrink-0 text-[10px] tabular-nums text-white/50">
+                    {enabled ? `Priority ${priorityOrder.slice(0, index + 1).filter((id) => (weights[id] ?? 0) > 0).length} · Weight ${weight}/10` : "Not prioritized"}
+                  </span>
+                  <div className="ml-1 flex shrink-0 gap-1" aria-label={`Move ${stat.name} in priority order`}>
+                    <button type="button" aria-label={`Move ${stat.name} up`} onClick={() => onPriorityMove(hash, -1)}
+                      disabled={index === 0} className="border border-white/15 px-2 py-1 text-xs text-white/70 hover:border-cyan-200/40 hover:text-white disabled:opacity-25">↑</button>
+                    <button type="button" aria-label={`Move ${stat.name} down`} onClick={() => onPriorityMove(hash, 1)}
+                      disabled={index === priorityOrder.length - 1} className="border border-white/15 px-2 py-1 text-xs text-white/70 hover:border-cyan-200/40 hover:text-white disabled:opacity-25">↓</button>
+                  </div>
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <label htmlFor={minimumId} className="w-14 shrink-0 text-[10px] font-semibold uppercase tracking-wide text-white/50">Minimum</label>
+                  <input id={minimumId} type="number" min={0} max={500} step={1} value={minimum}
+                    aria-label={`Minimum armor-item total for ${stat.name}`}
+                    onChange={(event: ChangeEvent<HTMLInputElement>) => {
+                      const parsed = Number(event.target.value);
+                      onMinimumChange(hash, Number.isFinite(parsed) ? Math.max(0, Math.min(500, Math.trunc(parsed))) : 0);
+                    }} className="w-[68px] shrink-0 border border-white/20 bg-[#131c28] px-2 py-1.5 text-xs tabular-nums text-white" />
+                  <input type="range" min={0} max={500} step={1} value={minimum}
+                    aria-label={`Minimum armor-item total slider for ${stat.name}`}
+                    onChange={(event: ChangeEvent<HTMLInputElement>) => onMinimumChange(hash, Number(event.target.value))}
+                    className="h-2 min-w-24 flex-1 cursor-pointer accent-cyan-300" />
+                  <span className="shrink-0 text-[10px] tabular-nums text-white/45">/ 500</span>
+                </div>
+              </div>;
+            })}
+          </div>
+          <p className="text-[10px] leading-relaxed text-white/40">
+            Minimum = observed sum of five armor item stats, not the final Guardian stat.
+            Absolute maximum ranges are not yet supported; relative loss limits remain under Advanced trade-offs.
+          </p>
         </div>
         <details className="min-w-0 border border-white/10 bg-black/15 p-3">
           <summary className="cursor-pointer text-xs font-bold text-white/80">Locked armor &amp; set requirements <span className="font-normal text-white/45">· optional</span></summary>

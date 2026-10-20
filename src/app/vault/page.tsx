@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import AppShell from "@/components/destiny-builder/AppShell";
+import { resolveSharedItemDetail, sharedItemCacheUrl } from "@/lib/destiny-builder/sharedItemDetailCache";
 
 type Guardian = {
   characterId: string;
@@ -118,6 +119,8 @@ type GuardiansResponse = ApiBase & { characters?: Guardian[] };
 type CoreResponse = ApiBase & { inventory?: DestinyItem[]; equipment?: DestinyItem[] };
 type AccountResponse = ApiBase & { vault?: DestinyItem[]; otherGuardianItems?: DestinyItem[] };
 type DetailResponse = ApiBase & { item?: ItemDetail };
+// Authenticated SQLite hydration: this is NOT a freshly verified Bungie result.
+type CachedDetailResponse = ApiBase & { scope: string; cachedDataIsLiveVerified: boolean; cached: unknown[] };
 type SyncScope = "core" | "account";
 type CategoryFilter = "all" | "weapon" | "armor" | "artifact";
 type SortMode = "name" | "power" | "tier";
@@ -492,7 +495,7 @@ function Inspector({
           </div>
         )}
         {baseDescription ? <p className="whitespace-pre-line text-xs leading-6 text-white/55">{baseDescription}</p> : null}
-        {loading && <div className="flex items-center gap-3 border border-white/10 p-3 text-xs text-white/50"><span className="h-3.5 w-3.5 animate-spin rounded-full border border-white/20 border-t-cyan-200" />Loading Bungie item details…</div>}
+        {loading && <div className="flex items-center gap-3 border border-white/10 p-3 text-xs text-white/50"><span className="h-3.5 w-3.5 animate-spin rounded-full border border-white/20 border-t-cyan-200" />Reading item details (local cache or Bungie)…</div>}
         {error && <p className="border border-amber-400/20 bg-amber-400/[0.05] p-3 text-xs text-amber-200">{error}</p>}
         {!detail && !loading && !error && <p className="text-xs text-white/35">Detailed sockets and stats are unavailable for this item.</p>}
         {detail && (
@@ -1657,7 +1660,8 @@ export default function VaultPage() {
   const selectedItem = allItems.find((item) => item.browserId === selectedId) ?? null;
   const selectedInstanceId = selectedItem?.itemInstanceId ?? null;
   const selectedHash = selectedItem?.itemHash ?? null;
-  const selectedDetail = selectedInstanceId ? details[selectedInstanceId] ?? null : null;
+  const selectedDetail = selectedInstanceId && details[selectedInstanceId]?.itemHash === selectedHash
+    ? details[selectedInstanceId] : null;
   const selectedLoading = selectedInstanceId ? Boolean(detailBusy[selectedInstanceId]) : false;
   const selectedError = selectedInstanceId ? detailErrors[selectedInstanceId] ?? null : null;
   const transferItem = transferItemId ? allItems.find((item) => item.browserId === transferItemId) ?? null : null;
@@ -1667,7 +1671,7 @@ export default function VaultPage() {
   const compareEntries: CompareEntry[] = compareIds.map((id, index) => {
     const item = compareItems[index];
     const itemId = item?.itemInstanceId ?? null;
-    return { id, item, detail: itemId ? details[itemId] ?? null : null,
+    return { id, item, detail: itemId && details[itemId]?.itemHash === item?.itemHash ? details[itemId] : null,
       loading: itemId ? Boolean(detailBusy[itemId]) : false,
       error: itemId ? detailErrors[itemId] ?? null : null };
   });
@@ -1775,17 +1779,25 @@ export default function VaultPage() {
   }, [awaitingTransfer, sourceGuardianId]);
 
   useEffect(() => {
-    if (!selectedInstanceId || selectedHash === null || details[selectedInstanceId] || pendingDetails.current.has(selectedInstanceId)) return;
+    if (!selectedInstanceId || selectedHash === null ||
+      details[selectedInstanceId]?.itemHash === selectedHash || pendingDetails.current.has(selectedInstanceId)) return;
     const instanceId = selectedInstanceId;
     pendingDetails.current.add(instanceId);
     setDetailBusy((current) => ({ ...current, [instanceId]: true }));
     void (async () => {
       try {
-        const endpoint = `/api/destiny/characters/${encodeURIComponent(sourceGuardianId ?? "")}/inventory?scope=detail&itemInstanceId=${encodeURIComponent(instanceId)}&itemHash=${selectedHash}`;
-        const response = await getApi<DetailResponse>(endpoint);
-        if (!response.item) throw new Error("Bungie returned no item details");
+        if (!sourceGuardianId) throw new Error("Guardian not available");
+        const identity = { itemInstanceId: instanceId, itemHash: selectedHash };
+        const resolved = await resolveSharedItemDetail(identity, {
+          readCache: () => getApi<CachedDetailResponse>(sharedItemCacheUrl(sourceGuardianId, identity)),
+          readLive: async () => {
+            const endpoint = `/api/destiny/characters/${encodeURIComponent(sourceGuardianId)}/inventory?scope=detail&itemInstanceId=${encodeURIComponent(instanceId)}&itemHash=${selectedHash}`;
+            const response = await getApi<DetailResponse>(endpoint);
+            return response.item;
+          },
+        });
         if (mounted.current) {
-          setDetails((current) => ({ ...current, [instanceId]: response.item! }));
+          setDetails((current) => ({ ...current, [instanceId]: resolved.detail as ItemDetail }));
           setDetailErrors((current) => { const next = { ...current }; delete next[instanceId]; return next; });
         }
       } catch (cause) {
@@ -1810,11 +1822,17 @@ export default function VaultPage() {
       setDetailBusy((current) => ({...current, [instanceId]: true}));
       void (async () => {
         try {
-          const endpoint = `/api/destiny/characters/${encodeURIComponent(sourceGuardianId)}/inventory?scope=detail&itemInstanceId=${encodeURIComponent(instanceId)}&itemHash=${item.itemHash}`;
-          const result = await getApi<DetailResponse>(endpoint);
-          if (!result.item) throw new Error("Bungie returned no item details");
+          const identity = { itemInstanceId: instanceId, itemHash: item.itemHash };
+          const resolved = await resolveSharedItemDetail(identity, {
+            readCache: () => getApi<CachedDetailResponse>(sharedItemCacheUrl(sourceGuardianId, identity)),
+            readLive: async () => {
+              const endpoint = `/api/destiny/characters/${encodeURIComponent(sourceGuardianId)}/inventory?scope=detail&itemInstanceId=${encodeURIComponent(instanceId)}&itemHash=${item.itemHash}`;
+              const response = await getApi<DetailResponse>(endpoint);
+              return response.item;
+            },
+          });
           if (mounted.current) {
-            setDetails((current) => ({...current, [instanceId]: result.item!}));
+            setDetails((current) => ({...current, [instanceId]: resolved.detail as ItemDetail}));
             setDetailErrors((current) => {const next={...current};delete next[instanceId];return next;});
           }
         } catch (cause) {

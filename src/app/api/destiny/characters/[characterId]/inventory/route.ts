@@ -1,6 +1,8 @@
 import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
-import { getInventoryItemDefinition } from "@/lib/bungie/manifest";
+import { getInventoryItemDefinition, getSocketTypeDefinition } from "@/lib/bungie/manifest";
+import { openItemDetailStore } from "@/lib/destiny-builder/itemDetailStore";
+import { indexProfileObservation, parseCachedDetailSelection } from "@/lib/destiny-builder/itemDetailProfileBridge";
 import { getItemCategory } from "@/lib/bungie/itemCategories";
 import { getWeaponPlugType } from "@/lib/bungie/weaponRoll";
 import { getStatDefinition } from "@/lib/bungie/stats";
@@ -10,6 +12,9 @@ import {
   getSubclassCatalog,
 } from "@/lib/bungie/subclassCatalog";
 
+// SYNC-2b requires SQLite in the Node.js runtime (never Edge).
+export const runtime = "nodejs";
+
 const ARMOR_STAT_HASHES = [
   2996146975, // Weapons
   392767087, // Health
@@ -18,6 +23,29 @@ const ARMOR_STAT_HASHES = [
   144602215, // Super
   4244567218, // Melee
 ] as const;
+
+/**
+ * Static Manifest investmentStats are DECLARED effects, not proof that a
+ * modifier is active, additive, or included in the live Bungie item stats.
+ * null = definition does not expose this field; [] = explicitly empty field.
+ * Only known Armor 3.0 hashes are projected into this evidence-only shape.
+ */
+function declaredArmorInvestmentStats(definition: any) {
+  if (!Array.isArray(definition?.investmentStats)) return null;
+  return definition.investmentStats
+    .filter((entry: any) =>
+      ARMOR_STAT_HASHES.some((hash) => hash === entry?.statTypeHash) &&
+      Number.isSafeInteger(entry?.value)
+    )
+    .map((entry: any) => ({
+      statHash: entry.statTypeHash as number,
+      value: entry.value as number,
+      isConditionallyActive:
+        typeof entry.isConditionallyActive === "boolean"
+          ? entry.isConditionallyActive as boolean
+          : null,
+    }));
+}
 
 const ARMOR_STAT_FALLBACK_NAMES = new Map<number, string>([
   [2996146975, "Weapons"],
@@ -145,6 +173,10 @@ async function getInventoryItemDefinitionWithRetry(itemHash: number, apiKey: str
 
 async function getStatDefinitionWithRetry(statHash: number, apiKey: string) {
   return withRetry(() => getStatDefinition(statHash, apiKey));
+}
+
+async function getSocketTypeDefinitionWithRetry(socketTypeHash: number, apiKey: string) {
+  return withRetry(() => getSocketTypeDefinition(socketTypeHash, apiKey));
 }
 
 async function getPlugSetDefinitionWithRetry(plugSetHash: number, apiKey: string) {
@@ -316,6 +348,38 @@ export async function GET(
 
   const membershipType = activeMembership.membershipType;
   const membershipId = activeMembership.membershipId;
+
+  // SYNC-2b: authenticated bulk cache hydration. It does NOT call GetItem,
+  // does not refresh Bungie, and never claims its data was verified live.
+  // Only current, hash-matched, non-expired entries indexed by this server
+  // and belonging to the authenticated Bungie membership are readable.
+  if (scope === "cached-details") {
+    let requested: ReturnType<typeof parseCachedDetailSelection>;
+    try {
+      requested = parseCachedDetailSelection(request.nextUrl.searchParams.get("items"));
+    } catch {
+      return NextResponse.json({success:false, error:"Invalid cache selection"}, {status:400});
+    }
+    try {
+      const store = openItemDetailStore();
+      try {
+        const cached: Array<{itemInstanceId:string; itemHash:number; item:Record<string,unknown>; refreshRecommended:boolean}> = [];
+        for (const selected of requested) {
+          const read = store.lookup({membershipType, membershipId}, selected.itemInstanceId, selected.itemHash);
+          if (read.state === "cached_unverified") {
+            cached.push({itemInstanceId:selected.itemInstanceId, itemHash:selected.itemHash, item:read.detail, refreshRecommended:read.refreshRecommended});
+          }
+        }
+        return NextResponse.json({
+          success:true, scope:"cached-details", cached, requestedCount:requested.length,
+          missingOrStaleCount:requested.length-cached.length,
+          cachedDataIsLiveVerified:false, installabilityVerified:false,
+        }, {headers:{"Cache-Control":"private, no-store"}});
+      } finally { store.close(); }
+    } catch {
+      return NextResponse.json({success:false, error:"Local detail cache unavailable"}, {status:503});
+    }
+  }
 
   if (scope === "detail") {
     const itemInstanceId =
@@ -516,6 +580,46 @@ export async function GET(
     );
 
     const plugDefinitionMap = new Map(plugDefinitions);
+
+    // B0.5c3d2b — Retrieve only the two audited Armor 3.0 stat-mod/tuning
+    // socket types, once per distinct hash. Uses MF-A1a versioned Manifest cache;
+    // failed lookups become unknown, never allow-all. No new Bungie item calls.
+    const armorSocketTypeHashes = definition?.itemType === 2
+      ? [...new Set<number>(socketEntries.map((entry: any) => entry?.socketTypeHash)
+          .filter((hash: unknown): hash is number =>
+            hash === 1718047805 || hash === 2581339086))]
+      : [];
+    const socketTypeResults = await mapWithConcurrency(armorSocketTypeHashes, 2, async (hash) => {
+      try {
+        return [hash, await getSocketTypeDefinitionWithRetry(hash, apiKey)] as const;
+      } catch {
+        return [hash, null] as const;
+      }
+    });
+    const socketTypeDefinitionMap = new Map(socketTypeResults);
+    // Only public, static definition hashes are exposed in the whitelist report.
+    function socketTypeWhitelistEvidence(socketTypeHash: unknown) {
+      if (socketTypeHash !== 1718047805 && socketTypeHash !== 2581339086) return null;
+      const definition = socketTypeDefinitionMap.get(socketTypeHash) ?? null;
+      const resolved = definition !== null;
+      const whitelist = definition?.plugWhitelist;
+      const validEntries = Array.isArray(whitelist) && whitelist.every((entry: any) =>
+        typeof entry?.categoryHash === 'number' &&
+        Number.isSafeInteger(entry.categoryHash) && entry.categoryHash > 0 && entry.categoryHash <= 0xffffffff);
+      const hashes = validEntries ? whitelist.map((entry: any) => entry.categoryHash as number) : null;
+      const malformed = resolved && (
+        definition?.hash !== socketTypeHash || definition?.redacted === true ||
+        (Array.isArray(hashes) && new Set(hashes).size !== hashes.length) ||
+        (whitelist !== null && whitelist !== undefined && !validEntries));
+      return {
+        source: 'bungie_manifest_socket_type_definition' as const,
+        socketTypeHash,
+        definitionResolved: resolved,
+        plugWhitelistCategoryHashes: malformed ? null : hashes,
+        malformed: Boolean(malformed),
+      };
+    }
+
 
     // Some perk-style DestinyInventoryItemDefinition entries (including
     // Seasonal Artifact perks) expose their name/icon on the item definition
@@ -889,44 +993,230 @@ export async function GET(
             perk.description)
       );
 
-    const liveStatValueMap = new Map<number, number>(
-      (statsData?.stats ? Object.values(statsData.stats) : [])
-        .filter(
-          (stat: any) =>
-            typeof stat?.statHash === "number"
-        )
-        .map((stat: any) => [
-          stat.statHash,
-          stat.value ?? 0,
-        ])
-    );
+    // A missing or malformed stat is UNKNOWN, not zero. Preserve true 0 and
+    // negative values (for example Health -5 from an installed tuning plug).
+    const liveStatValueMap = new Map<number, number>();
+    const invalidArmorStatHashes = new Set<number>();
+    for (const stat of Object.values(statsData?.stats ?? {}) as any[]) {
+      if (!ARMOR_STAT_HASHES.some((hash) => hash === stat?.statHash)) continue;
+      if (!Number.isSafeInteger(stat?.value) || liveStatValueMap.has(stat.statHash)) {
+        invalidArmorStatHashes.add(stat.statHash);
+        liveStatValueMap.delete(stat.statHash);
+      } else if (!invalidArmorStatHashes.has(stat.statHash)) {
+        liveStatValueMap.set(stat.statHash, stat.value);
+      }
+    }
 
-    const armorStats =
-      definition?.itemType === 2
-        ? ARMOR_STAT_HASHES.map((statHash) => {
-            const statDefinition =
-              statDefinitionMap.get(statHash);
-
+    const armorStats = definition?.itemType === 2
+      ? ARMOR_STAT_HASHES.filter((statHash) => liveStatValueMap.has(statHash))
+          .map((statHash) => {
+            const statDefinition = statDefinitionMap.get(statHash);
             return {
               statHash,
-              name:
-                statDefinition?.displayProperties?.name ??
-                ARMOR_STAT_FALLBACK_NAMES.get(statHash) ??
-                `Stat ${statHash}`,
-              description:
-                statDefinition?.displayProperties?.description ??
-                "",
-              value:
-                liveStatValueMap.get(statHash) ?? 0,
+              name: statDefinition?.displayProperties?.name ??
+                ARMOR_STAT_FALLBACK_NAMES.get(statHash) ?? `Stat ${statHash}`,
+              description: statDefinition?.displayProperties?.description ?? "",
+              value: liveStatValueMap.get(statHash)!,
             };
           })
-        : [];
+      : [];
 
-    const armorStatTotal = armorStats.reduce(
-      (total: number, stat: any) =>
-        total + (stat.value ?? 0),
-      0
-    );
+    const missingArmorStatHashes = ARMOR_STAT_HASHES.filter(
+      (statHash) => !liveStatValueMap.has(statHash));
+    const armorStatsComplete = missingArmorStatHashes.length === 0;
+    const armorStatTotal = armorStatsComplete
+      ? armorStats.reduce((total, stat) => total + stat.value, 0)
+      : null;
+
+    // Additional evidence only: static investmentStats describe possible
+    // effects. We cannot subtract them from live stats to fabricate a base roll.
+    // Record EVERY live socket, even if the selected plug definition failed.
+    const armorStatEvidence = definition?.itemType === 2 ? {
+      schemaVersion: 1,
+      observedStatsSource: "bungie_item_stats_component" as const,
+      presentStatHashes: ARMOR_STAT_HASHES.filter((hash) => liveStatValueMap.has(hash)),
+      missingStatHashes: missingArmorStatHashes,
+      invalidStatHashes: [...invalidArmorStatHashes],
+      complete: armorStatsComplete,
+      baseStats: null,
+      baseStatsStatus: "not_reconstructed" as const,
+      itemDefinitionInvestmentStats: declaredArmorInvestmentStats(definition),
+      socketCountFromManifest: socketEntries.length,
+      configuredSockets: liveSockets.map((socket: any, socketIndex: number) => {
+        const selectedPlugHash = Number.isSafeInteger(socket?.plugHash)
+          ? socket.plugHash as number : null;
+        const plugDefinition = selectedPlugHash !== null
+          ? plugDefinitionMap.get(selectedPlugHash) ?? null : null;
+        return {
+          socketIndex,
+          selectedPlugHash,
+          plugDefinitionResolved: plugDefinition !== null,
+          plugName: plugDefinition?.displayProperties?.name ?? null,
+          plugCategoryIdentifier: plugDefinition?.plug?.plugCategoryIdentifier ?? null,
+          declaredInvestmentStats: declaredArmorInvestmentStats(plugDefinition),
+          isEnabled: typeof socket?.isEnabled === "boolean" ? socket.isEnabled : null,
+          isVisible: typeof socket?.isVisible === "boolean" ? socket.isVisible : null,
+        };
+      }),
+      // No statement that an investmentStat delta was applied to the item;
+      // modifier applicability and precedence require a separate resolver.
+      modifierContributionStatus: "not_verified" as const,
+    } : null;
+
+    // Engine-B0.5b1 — Evidence of *potential* armor modifier availability.
+    // ItemReusablePlugs is live, per-instance Bungie state; Manifest sets are
+    // catalog candidates only. Neither source alone certifies equipability.
+    // All referenced definitions were fetched above for this same detail scope:
+    // NO extra Bungie/Manifest requests are made by this projection.
+    const armorModifierAvailabilityEvidence = definition?.itemType === 2 ? (() => {
+      const GENERAL = "enhancements.v2_general";
+      const TUNING = "core.gear_systems.armor_tiering.plugs.tuning.mods";
+      type PlugSource = "selected" | "live_item_reusable" |
+        "manifest_socket_items" | "manifest_reusable_set" | "manifest_randomized_set";
+      type PlugCandidate = {
+        plugHash: number;
+        sources: Set<PlugSource>;
+        liveCanInsert: boolean | null;
+        liveEnabled: boolean | null;
+        /** Live per-item rule failures, not permission to insert. null = absent. */
+        liveInsertFailIndexes: number[] | null;
+        liveEnableFailIndexes: number[] | null;
+        liveFailIndexEvidenceMalformed: boolean;
+      };
+      const pickInt = (value: unknown): number | null =>
+        Number.isSafeInteger(value) && typeof value === "number" && value >= 0
+          ? value : null;
+      const readFailIndexes = (value: unknown) => {
+        if (value === undefined || value === null) return { values: null as number[] | null, malformed: false };
+        if (!Array.isArray(value) || !value.every((x: unknown) =>
+          typeof x === "number" && Number.isSafeInteger(x) && x >= 0 && x <= 0xffffffff) ||
+          new Set(value).size !== value.length) return { values: null as number[] | null, malformed: true };
+        return { values: [...value] as number[], malformed: false };
+      };
+      const sockets = socketEntries.map((entry: any, socketIndex: number) => {
+        const liveSocket = liveSockets[socketIndex] ?? null;
+        const reusableDictionary = reusablePlugsData?.plugs ?? null;
+        const hasLiveReusableKey = reusableDictionary !== null &&
+          Object.prototype.hasOwnProperty.call(reusableDictionary, String(socketIndex));
+        const liveReusable = hasLiveReusableKey &&
+          Array.isArray(reusableDictionary[String(socketIndex)])
+          ? reusableDictionary[String(socketIndex)] : [];
+        const candidates = new Map<number, PlugCandidate>();
+        const addCandidate = (hash: unknown, source: PlugSource, live?: any) => {
+          if (typeof hash !== "number" || !Number.isSafeInteger(hash) ||
+              hash <= 0 || hash > 0xffffffff) return;
+          let candidate = candidates.get(hash);
+          if (!candidate) {
+            candidate = {
+              plugHash: hash, sources: new Set<PlugSource>(),
+              liveCanInsert: null, liveEnabled: null,
+              liveInsertFailIndexes: null, liveEnableFailIndexes: null,
+              liveFailIndexEvidenceMalformed: false,
+            };
+            candidates.set(hash, candidate);
+          }
+          candidate.sources.add(source);
+          if (source === "live_item_reusable") {
+            // Explicit false is NOT the same as missing. Retain both facts.
+            candidate.liveCanInsert = typeof live?.canInsert === "boolean" ? live.canInsert : null;
+            candidate.liveEnabled = typeof live?.enabled === "boolean" ? live.enabled : null;
+            const insertion = readFailIndexes(live?.insertFailIndexes);
+            const enablement = readFailIndexes(live?.enableFailIndexes);
+            candidate.liveInsertFailIndexes = insertion.values;
+            candidate.liveEnableFailIndexes = enablement.values;
+            candidate.liveFailIndexEvidenceMalformed = insertion.malformed || enablement.malformed;
+          }
+        };
+        addCandidate(liveSocket?.plugHash, "selected");
+        for (const item of liveReusable) addCandidate(item?.plugItemHash, "live_item_reusable", item);
+        for (const item of entry?.reusablePlugItems ?? [])
+          addCandidate(item?.plugItemHash, "manifest_socket_items");
+        for (const [setHash, source] of [
+          [entry?.reusablePlugSetHash, "manifest_reusable_set"],
+          [entry?.randomizedPlugSetHash, "manifest_randomized_set"],
+        ] as const) {
+          if (typeof setHash !== "number" || setHash <= 0) continue;
+          for (const item of plugSetMap.get(setHash)?.reusablePlugItems ?? [])
+            addCandidate(item?.plugItemHash, source);
+        }
+
+        const options = [...candidates.values()].map((candidate) => {
+          const plug = plugDefinitionMap.get(candidate.plugHash) ?? null;
+          const category = plug?.plug?.plugCategoryIdentifier ?? null;
+          const sources = [...candidate.sources];
+          const selected = sources.includes("selected");
+          const listedLive = sources.includes("live_item_reusable");
+          const evidenceState = selected ? "selected" :
+            listedLive && candidate.liveCanInsert === true ? "live_can_insert" :
+            listedLive && candidate.liveCanInsert === false ? "live_cannot_insert" :
+            listedLive ? "live_status_unknown" : "manifest_only";
+          const cost = plug?.plug?.energyCost ?? null;
+          return {
+            plugHash: candidate.plugHash,
+            name: typeof plug?.displayProperties?.name === "string"
+              ? plug.displayProperties.name : null,
+            plugCategoryIdentifier: typeof category === "string" ? category : null,
+            plugCategoryHash: pickInt(plug?.plug?.plugCategoryHash),
+            plugDefinitionResolved: plug !== null,
+            declaredInvestmentStats: declaredArmorInvestmentStats(plug),
+            selected,
+            sources,
+            liveCanInsert: candidate.liveCanInsert,
+            liveEnabled: candidate.liveEnabled,
+            liveInsertFailIndexes: candidate.liveInsertFailIndexes,
+            liveEnableFailIndexes: candidate.liveEnableFailIndexes,
+            liveFailIndexEvidenceMalformed: candidate.liveFailIndexEvidenceMalformed,
+            evidenceState,
+            // Cost is descriptive Manifest evidence, NOT an energy feasibility check.
+            declaredEnergyCost: cost ? {
+              energyCost: pickInt(cost.energyCost),
+              energyTypeHash: pickInt(cost.energyTypeHash),
+            } : null,
+          };
+        });
+        // Include an entire general/tuning socket when any of its options is
+        // identified. Preserve unresolved options on these sockets as unknown.
+        const isRelevant = options.some((option) =>
+          option.plugCategoryIdentifier === GENERAL ||
+          option.plugCategoryIdentifier === TUNING);
+        if (!isRelevant) return null;
+        return {
+          socketIndex,
+          socketTypeHash: pickInt(entry?.socketTypeHash),
+          socketTypeWhitelistEvidence: socketTypeWhitelistEvidence(entry?.socketTypeHash),
+          plugSources: pickInt(entry?.plugSources),
+          // B0.5b5: link the socket to its exact shared PlugSet key. Public
+          // Manifest hashes only; no account or character IDs are exposed.
+          reusablePlugSetHash: pickInt(entry?.reusablePlugSetHash),
+          randomizedPlugSetHash: pickInt(entry?.randomizedPlugSetHash),
+          selectedPlugHash: pickInt(liveSocket?.plugHash),
+          liveSocketPresent: liveSocket !== null,
+          liveSocketEnabled: typeof liveSocket?.isEnabled === "boolean" ? liveSocket.isEnabled : null,
+          liveSocketVisible: typeof liveSocket?.isVisible === "boolean" ? liveSocket.isVisible : null,
+          liveReusableDataPresent: hasLiveReusableKey,
+          manifestReusablePlugSetPresent: pickInt(entry?.reusablePlugSetHash) !== null,
+          manifestRandomizedPlugSetPresent: pickInt(entry?.randomizedPlugSetHash) !== null,
+          options,
+        };
+      }).filter((entry: any) => entry !== null);
+      const energy = instance?.energy ?? null;
+      return {
+        schemaVersion: 1,
+        source: "bungie_item_detail_live_reusable_plus_manifest" as const,
+        readOnly: true as const,
+        // These are raw optional instance fields. Armor 3.0 can lack legacy energy.
+        itemEnergyEvidence: energy ? {
+          energyCapacity: pickInt(energy.energyCapacity),
+          energyUsed: pickInt(energy.energyUsed),
+          energyTypeHash: pickInt(energy.energyTypeHash),
+        } : null,
+        socketCountFromManifest: socketEntries.length,
+        socketCountFromLive: liveSockets.length,
+        sockets,
+        installabilityVerified: false as const,
+        note: "Live canInsert is one insertion signal only. Manifest-only is theoretical; socket rules, energy, costs and upgrade requirements remain unverified.",
+      };
+    })() : null;
 
     const recoilDirection =
       readableStats.find((stat: any) =>
@@ -935,10 +1225,7 @@ export async function GET(
           .includes("recoil direction")
       )?.value ?? null;
 
-    return NextResponse.json({
-      success: true,
-      scope: "detail",
-      item: {
+    const projectedItemDetail = {
         itemHash: requestedItemHash,
         itemInstanceId,
         name:
@@ -972,14 +1259,32 @@ export async function GET(
           definition?.itemType === 2
             ? armorStatTotal
             : null,
+        // New optional evidence; existing consumers can ignore this field.
+        armorStatEvidence,
+        armorModifierAvailabilityEvidence,
         selectedPerks,
         perkColumns,
         intrinsicPerks,
         itemSet,
         recoilDirection,
         livePerks: livePerksData?.perks ?? [],
-      },
-    });
+      };
+
+    // Only save after the account inventory profile has observed the matching
+    // instance/hash. The SQLite module rejects unobserved or changed IDs.
+    // Failure must not break the existing live Bungie detail route.
+    try {
+      const store = openItemDetailStore();
+      try {
+        store.saveDetail({membershipType, membershipId}, {
+          ...projectedItemDetail, itemHash:requestedItemHash, itemInstanceId,
+        });
+      } finally { store.close(); }
+    } catch { /* SYNC-2b cache write is best-effort; no IDs/tokens are logged. */ }
+
+    return NextResponse.json({
+      success:true, scope:"detail", item:projectedItemDetail,
+    }, {headers:{"Cache-Control":"private, no-store"}});
   }
 
   const requestedComponents =
@@ -1307,6 +1612,14 @@ const subclassCatalog =
     const otherGuardianItems = accountGear.filter(
       (item) => item.location?.type === "otherGuardian"
     );
+
+    // Index the *server-fetched* GetProfile snapshot. Only complete verified
+    // profile components are permitted to reconcile absent instances.
+    try {
+      const store = openItemDetailStore();
+      try { indexProfileObservation(store, {membershipType,membershipId}, profileData.Response, characterId); }
+      finally { store.close(); }
+    } catch { /* Persisting an index is optional, Bungie response stays usable. */ }
 
     return NextResponse.json({
       success: true,
@@ -1936,18 +2249,35 @@ const definitionReusablePlugMap =
         })
       : [];
 
-    const armorStats =
-      definition?.itemType === 2
-        ? readableStats.filter(
-            (stat: any) =>
-              stat.name !== "Unknown Stat" && stat.value > 0
-          )
-        : [];
+    // Preserve signed Armor 3.0 values and true zeros in core/account scopes.
+    // A missing/malformed value stays absent, never a fabricated zero.
+    const observedArmorStats = (statsData?.stats
+      ? Object.values(statsData.stats) : []) as any[];
+    const validArmorStats = new Map<number, number>();
+    const invalidCoreStatHashes = new Set<number>();
+    for (const stat of observedArmorStats) {
+      if (!ARMOR_STAT_HASHES.some((hash) => hash === stat?.statHash)) continue;
+      if (!Number.isSafeInteger(stat?.value) || validArmorStats.has(stat.statHash)) {
+        invalidCoreStatHashes.add(stat.statHash);
+        validArmorStats.delete(stat.statHash);
+      } else if (!invalidCoreStatHashes.has(stat.statHash)) {
+        validArmorStats.set(stat.statHash, stat.value);
+      }
+    }
+    const armorStats = definition?.itemType === 2
+      ? ARMOR_STAT_HASHES.filter((hash) => validArmorStats.has(hash))
+          .map((statHash) => ({
+            statHash,
+            name: statDefinitionMap.get(statHash)?.displayProperties?.name ??
+              ARMOR_STAT_FALLBACK_NAMES.get(statHash) ?? `Stat ${statHash}`,
+            description: statDefinitionMap.get(statHash)?.displayProperties?.description ?? "",
+            value: validArmorStats.get(statHash)!,
+          }))
+      : [];
 
-    const armorStatTotal = armorStats.reduce(
-      (total: number, stat: any) => total + stat.value,
-      0
-    );
+    const armorStatTotal = armorStats.length === ARMOR_STAT_HASHES.length
+      ? armorStats.reduce((total, stat) => total + stat.value, 0)
+      : null;
 
     type PlugSource =
       | "itemReusable"
@@ -3002,10 +3332,71 @@ const definitionReusablePlugMap =
       }
     );
 
+  // Engine-B0.5b5: ItemSockets (305) on this existing GetProfile response
+  // already supplies profilePlugSets and characterPlugSets. Publish ONLY
+  // shared sets referenced by Armor 3.0 general/tuning socket definitions,
+  // never the full account plug catalogue and never another Bungie call.
+  // This is live evidence, NOT proof of insertion/unlock/energy legality.
+  const sharedArmorSetHashes = new Set<number>();
+  const ARMOR_MOD_SOCKET_TYPES = new Set([1718047805, 2581339086]);
+  const validPlugSetHash = (hash: unknown): hash is number =>
+    typeof hash === "number" && Number.isSafeInteger(hash) && hash > 0 && hash <= 0xffffffff;
+  for (const itemDefinition of definitionMap.values() as Iterable<any>) {
+    if (itemDefinition?.itemType !== 2) continue;
+    for (const entry of itemDefinition?.sockets?.socketEntries ?? []) {
+      if (!ARMOR_MOD_SOCKET_TYPES.has(entry?.socketTypeHash)) continue;
+      const flags = entry?.plugSources;
+      if (typeof flags !== "number" || !Number.isSafeInteger(flags) || (flags & 12) === 0) continue;
+      for (const setHash of [entry?.reusablePlugSetHash, entry?.randomizedPlugSetHash]) {
+        if (validPlugSetHash(setHash)) sharedArmorSetHashes.add(setHash);
+      }
+    }
+  }
+  const profileSetDictionary: Record<string, any> = profilePlugSets;
+  const characterSetDictionary: Record<string, any> = characterPlugSets;
+  const hasOwnSet = (dictionary: Record<string, any>, hash: number) =>
+    Object.prototype.hasOwnProperty.call(dictionary, String(hash));
+  const toSharedPlugs = (plugs: unknown) => Array.isArray(plugs)
+    ? plugs.flatMap((plug: any) => validPlugSetHash(plug?.plugItemHash)
+      ? [{
+          plugHash: plug.plugItemHash as number,
+          canInsert: typeof plug.canInsert === "boolean" ? plug.canInsert : null,
+          enabled: typeof plug.enabled === "boolean" ? plug.enabled : null,
+        }] : [])
+    : [];
+  const sharedModifierPlugSetEvidence = {
+    schemaVersion: 1,
+    source: "bungie_profile_item_sockets_shared_plug_sets" as const,
+    readOnly: true as const,
+    scopedToRequestedGuardian: true as const,
+    // Component absence must NOT be mistaken for an empty live plug set.
+    profileComponentPresent: profileData.Response?.profilePlugSets?.data?.plugs != null,
+    characterComponentPresent:
+      profileData.Response?.characterPlugSets?.data?.[characterId]?.plugs != null,
+    sets: [...sharedArmorSetHashes].sort((a, b) => a - b).map((setHash) => ({
+      setHash,
+      profileSetPresent: hasOwnSet(profileSetDictionary, setHash),
+      characterSetPresent: hasOwnSet(characterSetDictionary, setHash),
+      profilePlugs: toSharedPlugs(profileSetDictionary[String(setHash)]),
+      characterPlugs: toSharedPlugs(characterSetDictionary[String(setHash)]),
+    })),
+    installabilityVerified: false as const,
+    note: "Profile/character plug sets are scoped live insertion signals; inventory-sourced alternatives, full socket rules and energy are not certified.",
+  };
+
+  // The core profile ordinarily omits the Vault component: always treat
+  // coverage as partial unless Bungie actually returned every component.
+  try {
+    const store = openItemDetailStore();
+    try { indexProfileObservation(store, {membershipType,membershipId}, profileData.Response, characterId); }
+    finally { store.close(); }
+  } catch { /* Cache failure must never block the original core UI. */ }
+
   return NextResponse.json({
     success: true,
     scope: "core",
     requestedCharacterId: characterId,
+    sharedModifierPlugSetEvidence,
     inventoryCount: enrichedInventory.length,
     equipmentCount: enrichedEquipment.length,
     vaultCount: enrichedVault.length,
