@@ -2,7 +2,7 @@
  * Run at the repository root: npx tsx test-armor-modifier-simulator.ts
  * Fixtures are anonymized six-stat snapshots from the B0.3c live audit; no account IDs.
  */
-import { simulateArmorModifiers, type SimulatorInput, type ModifierConfig, type ArmorBaseStats } from './src/lib/destiny-builder/armorModifierSimulator';
+import { simulateArmorModifiers, type SimulatorInput, type ModifierConfig, type ArmorBaseStats } from '../src/lib/destiny-builder/armorModifierSimulator';
 
 const IDS = [2996146975, 392767087, 1943323491, 1735777505, 144602215, 4244567218];
 const NAMES = ['Weapons', 'Health', 'Class', 'Grenade', 'Super', 'Melee'];

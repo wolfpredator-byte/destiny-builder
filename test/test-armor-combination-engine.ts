@@ -1,9 +1,9 @@
 /** Offline assertions for Engine-B0.6a1. No API calls, writes, or external dependencies. */
-import { ARMOR_3_STAT_IDS } from './src/lib/destiny-builder/armorBaseStatsResolver';
+import { ARMOR_3_STAT_IDS } from '../src/lib/destiny-builder/armorBaseStatsResolver';
 import {
   ARMOR_COMBINATION_SLOT_HASHES, searchArmorCombinations,
   type ArmorCombinationItem, type ArmorCombinationRequest,
-} from './src/lib/destiny-builder/armorCombinationEngine';
+} from '../src/lib/destiny-builder/armorCombinationEngine';
 const checks: [string, () => void][] = [];
 const test = (name: string, fn: () => void) => checks.push([name, fn]);
 function assert(value: unknown, message: string): asserts value {

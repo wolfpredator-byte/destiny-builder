@@ -8,8 +8,8 @@
  */
 import * as assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { validateArmorInstallability } from './src/lib/destiny-builder/armorInstallabilityValidator';
-import type { ModifierAvailabilityAssessment, Availability } from './src/lib/destiny-builder/armorModifierAvailability';
+import { validateArmorInstallability } from '../src/lib/destiny-builder/armorInstallabilityValidator';
+import type { ModifierAvailabilityAssessment, Availability } from '../src/lib/destiny-builder/armorModifierAvailability';
 
 type Input = Parameters<typeof validateArmorInstallability>[0];
 type Check = { passed: boolean; blocked: boolean; unknown: boolean };

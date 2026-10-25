@@ -3,7 +3,7 @@ import {strict as assert} from "node:assert";
 import {
   selectAccountDetailKeys, extractMatchingCachedDetails, matchesLiveDetail,
   runDetailClientSync, type DetailKey, type DetailItem,
-} from "./src/lib/destiny-builder/itemDetailClientSync";
+} from "../src/lib/destiny-builder/itemDetailClientSync";
 
 const id=(n:number)=>String(10000+n);
 const row=(n:number,category="armor")=>({itemInstanceId:id(n),itemHash:1000+n,category});

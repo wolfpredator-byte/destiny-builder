@@ -3,7 +3,7 @@
  * This script intercepts ALL fetch requests: it NEVER contacts Bungie or OpenAI.
  * Type/cache lookup only; this does not certify plug installation.
  */
-import { getInventoryItemDefinition, getSocketTypeDefinition } from './src/lib/bungie/manifest';
+import { getInventoryItemDefinition, getSocketTypeDefinition } from '../src/lib/bungie/manifest';
 
 const SOCKET_A = 1718047805;
 const SOCKET_B = 2581339086;

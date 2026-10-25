@@ -2,7 +2,7 @@
  * Engine-B0.5c3d2b — Offline socket-type whitelist compatibility tests.
  * Checks *category compatibility only*, never installability or a Bungie write.
  */
-import { assessArmorModifierAvailability } from './src/lib/destiny-builder/armorModifierAvailability';
+import { assessArmorModifierAvailability } from '../src/lib/destiny-builder/armorModifierAvailability';
 const GENERAL = 'enhancements.v2_general';
 const SOCKET = 1718047805;
 const SELECTED = 1999001;

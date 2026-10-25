@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { sharedItemCacheUrl, resolveSharedItemDetail } from "./src/lib/destiny-builder/sharedItemDetailCache";
+import { sharedItemCacheUrl, resolveSharedItemDetail } from "../src/lib/destiny-builder/sharedItemDetailCache";
 const key = {itemInstanceId:"1000123456",itemHash:424242};
 const details = { ...key, name:"Observed item", selectedPerks:[] };
 const cache=(rows:unknown[])=>({success:true,scope:"cached-details",cachedDataIsLiveVerified:false,

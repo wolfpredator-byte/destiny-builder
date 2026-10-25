@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openItemDetailStore, type ObservedInstance } from "./src/lib/destiny-builder/itemDetailStore";
+import { openItemDetailStore, type ObservedInstance } from "../src/lib/destiny-builder/itemDetailStore";
 
 const tests: Array<[string, () => void]> = [];
 const test = (name: string, fn: () => void) => tests.push([name, fn]);

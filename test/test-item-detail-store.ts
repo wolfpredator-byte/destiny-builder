@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { defaultItemDetailDatabasePath, openItemDetailStore, type ObservedInstance } from "./src/lib/destiny-builder/itemDetailStore";
+import { defaultItemDetailDatabasePath, openItemDetailStore, type ObservedInstance } from "../src/lib/destiny-builder/itemDetailStore";
 
 const account = { membershipType: 3, membershipId: "12345678901234567" };
 const otherAccount = { membershipType: 3, membershipId: "12345678901234568" };

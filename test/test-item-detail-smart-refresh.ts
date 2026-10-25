@@ -5,8 +5,8 @@ import { strict as assert } from "node:assert";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openItemDetailStore, type ObservedInstance } from "./src/lib/destiny-builder/itemDetailStore";
-import { runDetailClientSync, type DetailKey, type DetailItem, MAX_SOFT_REFRESH_PER_RUN } from "./src/lib/destiny-builder/itemDetailClientSync";
+import { openItemDetailStore, type ObservedInstance } from "../src/lib/destiny-builder/itemDetailStore";
+import { runDetailClientSync, type DetailKey, type DetailItem, MAX_SOFT_REFRESH_PER_RUN } from "../src/lib/destiny-builder/itemDetailClientSync";
 
 const HOUR=60*60*1000, DAY=24*HOUR;
 const account={membershipType:3,membershipId:"12345678900123456"};

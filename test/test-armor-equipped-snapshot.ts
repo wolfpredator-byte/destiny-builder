@@ -1,12 +1,12 @@
 /** Engine-B0.6a3 offline checks. No Bungie/OpenAI/network access. */
 import { strict as assert } from 'node:assert';
-import { ARMOR_3_STAT_IDS } from './src/lib/destiny-builder/armorBaseStatsResolver';
+import { ARMOR_3_STAT_IDS } from '../src/lib/destiny-builder/armorBaseStatsResolver';
 import {
   ARMOR_COMBINATION_SLOT_HASHES, type ArmorCombinationItem,
-} from './src/lib/destiny-builder/armorCombinationEngine';
+} from '../src/lib/destiny-builder/armorCombinationEngine';
 import {
   summarizeEquippedArmorSnapshot, selectMissingArmorDetailBatch, ARMOR_DETAIL_BATCH_LIMIT,
-} from './src/lib/destiny-builder/armorEquippedSnapshot';
+} from '../src/lib/destiny-builder/armorEquippedSnapshot';
 
 const records: [string, () => void][] = [];
 const test = (name:string, fn:()=>void) => records.push([name,fn]);

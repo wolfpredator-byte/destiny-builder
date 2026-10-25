@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
-import { indexProfileObservation, profileObservationFromBungie, parseCachedDetailSelection } from "./src/lib/destiny-builder/itemDetailProfileBridge";
-import { openItemDetailStore, type ItemStoreScope, type ObservedInstance, type InventoryCoverage } from "./src/lib/destiny-builder/itemDetailStore";
+import { indexProfileObservation, profileObservationFromBungie, parseCachedDetailSelection } from "../src/lib/destiny-builder/itemDetailProfileBridge";
+import { openItemDetailStore, type ItemStoreScope, type ObservedInstance, type InventoryCoverage } from "../src/lib/destiny-builder/itemDetailStore";
 
 let passed = 0;
 function test(name: string, fn: () => void) {

@@ -3,7 +3,7 @@
  * Offline deterministic tests; no Bungie/OpenAI calls or writes.
  * Live failure indexes and Manifest plug category hash are *evidence*, not install permission.
  */
-import { assessArmorModifierAvailability } from './src/lib/destiny-builder/armorModifierAvailability';
+import { assessArmorModifierAvailability } from '../src/lib/destiny-builder/armorModifierAvailability';
 
 const GENERAL = 'enhancements.v2_general';
 const TYPE_GENERAL = 1718047805;

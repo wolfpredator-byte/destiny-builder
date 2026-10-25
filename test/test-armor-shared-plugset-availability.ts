@@ -6,7 +6,7 @@
  * Run from repository root:
  *   npx tsx test-armor-shared-plugset-availability.ts
  */
-import { assessArmorModifierAvailability } from './src/lib/destiny-builder/armorModifierAvailability';
+import { assessArmorModifierAvailability } from '../src/lib/destiny-builder/armorModifierAvailability';
 
 const GENERAL = 'enhancements.v2_general';
 const TUNING = 'core.gear_systems.armor_tiering.plugs.tuning.mods';

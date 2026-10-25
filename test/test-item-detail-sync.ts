@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import {openItemDetailStore} from "./src/lib/destiny-builder/itemDetailStore";
-import {assembleItemDetailSyncSnapshot as assemble, runItemDetailSyncBatch as run} from "./src/lib/destiny-builder/itemDetailSync";
+import {openItemDetailStore} from "../src/lib/destiny-builder/itemDetailStore";
+import {assembleItemDetailSyncSnapshot as assemble, runItemDetailSyncBatch as run} from "../src/lib/destiny-builder/itemDetailSync";
 
 const scope = {membershipType: 3, membershipId: "234567890123"};
 const object = (id: string, hash = 100, category="armor") => ({itemInstanceId:id, itemHash:hash, category});

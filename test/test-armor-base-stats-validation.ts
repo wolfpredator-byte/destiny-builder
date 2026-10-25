@@ -13,7 +13,7 @@ import {
   type ArmorEvidenceSocket,
   type DeclaredStatContribution,
   type ArmorStatInput,
-} from './src/lib/destiny-builder/armorBaseStatsResolver';
+} from '../src/lib/destiny-builder/armorBaseStatsResolver';
 
 // Helper to create valid minimal evidence
 function createValidEvidence(

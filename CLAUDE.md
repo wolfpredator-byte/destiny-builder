@@ -10,9 +10,24 @@ Tech stack: Next.js, TypeScript, React and Tailwind CSS.
 
 ## Mandatory development rules
 
-- The project roadmap is the source of truth.
-- Locate and read the roadmap before planning changes.
-- If the roadmap cannot be located, report that fact.
+- The project roadmap is `docs/ROADMAP.md` and is the source of truth.
+- Read `docs/ROADMAP.md` before planning changes; only the phase marked ▶ is authorized.
+- For evidence and decision history, see `docs/DESTINY_BUILDER_PROJECT_MEMORY.md`.
+- If `docs/ROADMAP.md` cannot be located, report that fact.
+~~~
+
+## Come salvarla
+
+Non posso scrivere io sul repository. Da PowerShell, nella radice del progetto:
+
+~~~powershell
+# dopo aver salvato il file in docs\ROADMAP.md e modificato CLAUDE.md
+git status --short
+git diff CLAUDE.md
+git add docs/ROADMAP.md CLAUDE.md
+git commit -m "docs: add ROADMAP.md as source of truth (allineata a memoria v1.8)"
+~~~
+
 - Never infer the current project phase from Git commits alone.
 - Never implement new features outside the approved phase.
 - Do not modify unrelated files.

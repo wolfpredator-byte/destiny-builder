@@ -5,8 +5,8 @@ const assert = {
   equal(actual:unknown,expected:unknown,message?:string):void {if(actual!==expected) throw new Error((message??'not equal')+`: ${String(actual)} !== ${String(expected)}`);},
   deepEqual(actual:unknown,expected:unknown,message?:string):void {if(JSON.stringify(actual)!==JSON.stringify(expected)) throw new Error((message??'not equal')+`: ${JSON.stringify(actual)} !== ${JSON.stringify(expected)}`);},
 };
-import { assessArmorModifierAvailability } from './src/lib/destiny-builder/armorModifierAvailability';
-import { simulateArmorModifiers } from './src/lib/destiny-builder/armorModifierSimulator';
+import { assessArmorModifierAvailability } from '../src/lib/destiny-builder/armorModifierAvailability';
+import { simulateArmorModifiers } from '../src/lib/destiny-builder/armorModifierSimulator';
 
 const GENERAL='enhancements.v2_general';
 const TUNING='core.gear_systems.armor_tiering.plugs.tuning.mods';

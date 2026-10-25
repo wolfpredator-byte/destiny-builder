@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert';
-import { prepareArmorCombinationUi } from './src/lib/destiny-builder/armorCombinationUiBridge';
-import { ARMOR_3_STAT_IDS } from './src/lib/destiny-builder/armorBaseStatsResolver';
-import { ARMOR_COMBINATION_SLOT_HASHES, searchArmorCombinations } from './src/lib/destiny-builder/armorCombinationEngine';
+import { prepareArmorCombinationUi } from '../src/lib/destiny-builder/armorCombinationUiBridge';
+import { ARMOR_3_STAT_IDS } from '../src/lib/destiny-builder/armorBaseStatsResolver';
+import { ARMOR_COMBINATION_SLOT_HASHES, searchArmorCombinations } from '../src/lib/destiny-builder/armorCombinationEngine';
 const SLOT = 3448274439;
 const item = (id: string, overrides: Record<string, unknown>={}) => ({category:'armor', name:'Helmet', itemHash:123, itemInstanceId:id, equipmentSlotHash:SLOT, classType:2, tierTypeName:'Legendary',...overrides});
 const pools = (equipped:unknown[]=[],inventory:unknown[]=[],vault:unknown[]=[],otherGuardian:unknown[]=[]) => ({equipped,inventory,vault,otherGuardian});
