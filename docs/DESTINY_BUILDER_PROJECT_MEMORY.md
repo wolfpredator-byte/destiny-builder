@@ -1,6 +1,6 @@
 # DESTINY BUILDER — MEMORIA DEL PROGETTO, ROADMAP E REGISTRO DECISIONI
 
-> **Versione:** 1.8 — 20 ottobre 2026 (checkpoint dopo SYNC-3b1)  
+> **Versione:** 1.9 — 25 ottobre 2026 (checkpoint H1-A; SYNC-3b1 ultimo checkpoint funzionale)  
 > **Ambito:** Destiny Builder / Destiny Build Assistant (non JARVIS/Ghost)  
 > **Scopo:** documento di continuità da conservare nel repository e riutilizzare nelle nuove chat con ChatGPT e nei task Devin.  
 > **Stato del documento:** ricostruzione basata su conversazioni, resoconti, codice e test condivisi. **Non è un audit completo del repository corrente**. Prima di cambiare codice, verificare i file reali sul PC.  
@@ -8,7 +8,31 @@
 
 ---
 
-## 0. LEGGERE QUESTO PRIMA DI LAVORARE — STATO ATTUALE v1.8
+## 0. LEGGERE QUESTO PRIMA DI LAVORARE — STATO ATTUALE v1.9
+
+
+### Aggiornamento prioritario — 25/10/2026 (v1.9)
+
+**Fonte di verità finalmente presente:** `docs/ROADMAP.md` è stato aggiunto al repository come v1.0 ed è richiamato da `CLAUDE.md`. Questo pacchetto aggiorna la roadmap a v1.1. Non cercare un inesistente `ROADMAP.md` in root. L'utente ha approvato espressamente un breve checkpoint di manutenzione **H1**, seguito da **H2**, *prima* di riprendere SYNC-3b2; aggiornare in coerenza `docs/ROADMAP.md`. Non interpretare automaticamente i commit Git come nuova autorizzazione funzionale.
+
+**Ultimo checkpoint funzionale confermato:** `SYNC-3b1` (Builder/Vault/Inspector cache-first) con conferma browser «funziona tutto». SYNC-3b2 **non implementato**; dopo di esso Engine-B0.6a4 (solo Builder Preview) resta previsto. Nessuna regressione o nuova certificazione di installabilità è stata dimostrata.
+
+**Checkpoint operativo ATTIVO: H1 — verifiche riproducibili e ambiente OpenCode/Ollama.** Il repository GitHub remoto pubblico `wolfpredator-byte/destiny-builder` sul branch `master` mostra al 25/10/2026 il commit `95352c4bb5` («Cambiamenti roadmap e configurazione opencode»), successivo a `473850e1e9` (integrazione Ollama) e `fca09fe389` (`sync-3b1-ok`). L'utente **ha scelto di mantenerlo pubblico**; mantenere segreti/DB fuori da Git e dai report.
+
+- **H1-A runner** — **NON CHIUSO / in collaudo Windows**. Prima implementazione affidata ad OpenCode/Ollama (Qwen3.5 4B) difettosa: `node --check` non rilevava l'errore di comportamento, `node scripts/verify.mjs` non produceva `.next/verify-report.txt`; `Get-Content` ha dato *path inesistente*. Il log agente asseriva 21 suite senza prova e usava liste di test fisse, Promise improprie e controlli exit code errati. Un **hotfix di solo `scripts/verify.mjs`** è stato preparato e dichiarato verificato in scenari simulati offline, ma il suo risultato Windows **NON è ancora stato riportato**. Su GitHub il `scripts/verify.mjs` del commit corrente è un'intestazione incompleta; non trattarlo come programma funzionante. Passo immediato: applicare/verificare il file corretto, eseguire `node --check scripts/verify.mjs`, `node scripts/verify.mjs`, controllare exit code e leggere `.next/verify-report.txt`. Fermarsi se non genera report su successo/fallimento.
+- **H1-B** — **non implementato / dopo H1-A**: aggiungere `npm run verify` a `package.json`, eseguire e conservare il report, controllare `git diff`/`git status`; non spostare ancora le 18 suite. La dipendenza di sviluppo `tsx` risulta **già presente** nel `package.json` remoto con versione esatta `4.23.15`: non reinstallarla alla cieca.
+- **H2** — **pianificato, non svolto**: ridurre l'overhead di handoff documentale con `STATE.md` breve, `DECISIONS.md` append-only e `CHANGELOG.md` storico; mantenere il documento originario come archivio finché non si verifica la migrazione; `docs/ROADMAP.md` resta la fonte della sequenza e delle autorizzazioni.
+- **SYNC-3b2** — successiva fase funzionale dopo H1/H2: single-flight per account, navigazione/remount Strict Mode, stop/abort, progresso e budget, nessun download massivo se cache indisponibile; non attivare sincronizzazioni globali invasive senza collaudo. Solo dopo: **Engine-B0.6a4**, applicazione esplicita all'anteprima locale.
+
+**Ambiente agente verificato dal repository:** `opencode.json` ora seleziona `ollama/qwen3.5:4b` (non `granite3.3:8b`); OpenCode/Ollama è strumento di **sviluppo locale**, non AI automaticamente integrata nel runtime di Destiny Builder. Richiedere approvazione per shell/edit; non credere alle dichiarazioni PASS senza log/exit code reali. In `CLAUDE.md` remoto esiste anche un blocco accidentale di istruzioni `~~~` su come salvare la roadmap: possibile pulizia futura **separata e approvata**, non cambiare ora file non richiesti.
+
+**Stato locale segnalato dall'utente durante H1-A:** `M opencode.json`, `M package-lock.json`, `M package.json`, `D scripts/opencode-write-probe.txt`, `?? scripts/verify.mjs`; era un output *precedente all'ultimo commit remoto* e non è prova dello stato odierno. Prima di sostituire file, verificare `git status --short` e i diff; non ripristinare/cancellare automaticamente modifiche non autorizzate. Annotare SHA/commit, Node, typegen, tsc, suite e risultati effettivi nel report; nessun segreto nel report.
+
+**Regole invarianti:** roadmap unica fonte; guardare sorgenti correnti, `AGENTS.md` e documentazione Next.js locale; una patch piccola/test veri; niente operazioni Bungie dall'Optimizer, niente chiamate OpenAI a pagamento, niente inventati `PASS`, nessun ID/token nei report; cache non equivale a dato Bungie live; `certifiedForOptimization:false` fino a prova.
+
+---
+
+### Snapshot storico — 20/10/2026 (v1.8, non più task attivo)
 
 **Ultimo checkpoint operativo (20/10/2026): `SYNC-3b1 — lettura dettagli condivisa cache-first` confermato funzionante dall'utente nel Builder, Vault e Inspector.** La patch introduce `sharedItemDetailCache.ts` e la lettura `scope=cached-details` prima del fallback `scope=detail` per singole istanze. I **18/18 controlli di SYNC-3b1** sono stati riportati come superati offline dall'assistente (con parsing TSX delle pagine); l'utente ha confermato «funziona tutto» nella propria installazione. **Non è stato incollato un nuovo log `npx tsc --noEmit` o della suite SYNC-3b1 eseguita su Windows**. Non trasformare la conferma funzionale in un'affermazione di test CLI non mostrati.
 
@@ -691,7 +715,7 @@ Un solo recupero iniziale progressivo per gli oggetti posseduti, dettagli persis
 - Cache per account; niente token/ID nei log o nell'AI; no account-mixing; niente fetch massivo se cache non è accessibile. Il DB privato locale SQLite **non sostituisce** il Manifest statico/localizzato.
 - Destinazione principale Windows: `C:\Projects\DestinyBuilder\destiny-builder`; leggere repo/git status e `ROADMAP.md` reale prima di patch. `AGENTS.md` comanda consultazione documentazione `node_modules/next/dist/docs/` per nuove modifiche Next.js.
 
-## 26. PROSSIMO INTERVENTO E QUICK-HANDOFF v1.8 — `SYNC-3b2` (NON IMPLEMENTATO)
+## 26. QUICK-HANDOFF STORICO v1.8 — `SYNC-3b2` (NON IMPLEMENTATO; NON PIÙ TASK IMMEDIATO)
 
 **Obiettivo autorizzato dalle conversazioni:** un coordinatore **unico di sincronizzazione a livello app**, non legato soltanto alla pagina Armor v2. Passando tra Builder, Vault e Armor Optimizer non deve iniziare ogni volta un download duplicato; utilizzare snapshot Bungie attuale, SQLite e differenziale per istanza, con controllo di concorrenza/budget, progresso e annullamento visibili. Lo stato cache-first degli Inspector (3b1) già funziona e va preservato.
 
@@ -726,3 +750,44 @@ npx tsx test-armor-installability-validator.ts
 ```
 
 **Regole sempre valide:** roadmap reale unica fonte di verità; versioni installate prima di qualsiasi patch; `AGENTS.md` e guide locali Next.js; un file per ZIP; backup+diff; no nuove dipendenze/paid AI, no scritture Bungie dall'Optimizer, niente ID/token in export; distinzione stato Bungie/preview/cache/teorico; `certifiedForOptimization:false` finché non provato. Questi documenti sono **copie per il checkpoint**, non aggiornano da soli Git/Windows.
+
+---
+
+## 27. CHECKPOINT 25/10/2026 — H1/H2 E ROADMAP (v1.9, stato operativo)
+
+### Evidenza repository (lettura GitHub; non equivale a verifica locale Windows)
+
+| Oggetto | Evidenza | Limite |
+|---|---|---|
+| GitHub | Repo pubblico `wolfpredator-byte/destiny-builder`, branch `master`; ultimo commit osservato `95352c4bb5` | Eventuali cambi locali non sono visibili |
+| Roadmap | `docs/ROADMAP.md` v1.0 presente, fase funzionale SYNC-3b2 prevista | Ora è approvato il breve inserimento H1→H2 prima di SYNC-3b2 |
+| npm | `tsx` devDependency esatta `4.23.15`; manca script `verify` | `npm run verify` non va annunciato come disponibile |
+| H1-A GitHub | `scripts/verify.mjs` remoto contiene solo prologo e import | Non è un runner verificato |
+| H1-A Windows | L'utente ha eseguito `node --check`, `node scripts/verify.mjs` e `Get-Content .next/verify-report.txt`; **report assente** | Nessun PASS del runner dimostrato |
+| H1-A patch | È stata fornita una correzione singolo-file con 4 scenari simulati riferiti come PASS offline | Mancano installazione e test Windows |
+| Ollama/OpenCode | `opencode.json` utilizza `ollama/qwen3.5:4b`; integrazione CLI nel repo | Distinguere agente locale di sviluppo dal runtime AI del prodotto |
+| Stato funzionale | SYNC-3b1 test 18/18 riferiti offline, e «funziona tutto» nel browser | Non presentare come test WIN non incollati |
+
+### Nuova sequenza espressamente concordata
+
+1. **▶ H1-A** — correggere/validare il runner, trovare i 18 `test-*.ts` in root, typegen+tsc+suite, report con exit code veri anche in caso di errore, nessuna rete Bungie/OpenAI nei test; chiusura solo dopo output Windows e report.
+2. **⏳ H1-B** — aggiungere `npm run verify` nel solo `package.json` (più gli effetti lockfile solo se realmente necessari), eseguire e raccogliere report, verificare `git status`, eventuale commit checkpoint autorizzato.
+3. **⏳ H2** — snellire documentazione: `STATE.md`, `DECISIONS.md`, `CHANGELOG.md`; archiviare non cancellare memoria storica; aggiornare i collegamenti negli handoff e in `docs/ROADMAP.md` con task dedicato.
+4. **⏳ SYNC-3b2** — coordinatore globale di sincronizzazione con proprietà single-flight/abort/Strict Mode, per account, senza duplicate requests e senza ondate automatiche.
+5. **⏳ Engine-B0.6a4** — selezione e applicazione di combinazione Armor *soltanto* alla Builder Preview locale, su conferma. Nessuna scrittura Bungie.
+
+**Criteri di uscita proposti per SYNC-3b2 (da validare su dati reali):** Builder→Vault→Armor non deve generare richieste live duplicate per la stessa istanza già valida; cambio account/Guardian impedisce di applicare risultati del contesto precedente; Strict Mode e remount non creano due worker; pause/abort limitano le richieste; cache indisponibile non produce download massivi. Distinguere in log solo conteggi anonimi, non gli ID.
+
+**Ordine delle verifiche H1 su Windows:**
+
+```powershell
+node --check .\scripts\verify.mjs
+node .\scripts\verify.mjs
+Write-Host 'Exit code:' $LASTEXITCODE
+Get-Content .\.next\verify-report.txt
+git status --short
+```
+
+Il report `.next/verify-report.txt` è normalmente ignorato da Git insieme alla directory `.next/`; preservarlo manualmente come evidenza quando necessario, senza segreti.
+
+**Questa memoria non sostituisce la roadmap:** `docs/ROADMAP.md` è il contratto operativo. La sezione 26 e altre istruzioni cronologiche sono **storiche**; la sezione 0 e questa sezione 27 prevalgono per lo stato dell'ottobre 2026.

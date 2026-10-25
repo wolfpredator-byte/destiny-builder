@@ -1,158 +1,171 @@
 # DESTINY BUILDER — ROADMAP
 
-> **Fonte di verità del progetto** (richiamata da `CLAUDE.md`).
-> **Versione:** 1.0 — allineata a `docs/DESTINY_BUILDER_PROJECT_MEMORY.md` v1.8 (20/10/2026, dopo SYNC-3b1).
-> **Dettagli, prove complete e storico decisioni:** `docs/DESTINY_BUILDER_PROJECT_MEMORY.md`, sezioni 0 e 21–26.
-> **Avvio rapido per nuove chat:** `docs/NEXT_CHAT_START.md`.
+> **Fonte di verità del progetto**, letta da `CLAUDE.md`.  
+> **Versione:** 1.1 — 25 ottobre 2026 · checkpoint manutenzione H1-A.  
+> **Memoria e prove:** `docs/DESTINY_BUILDER_PROJECT_MEMORY.md` v1.9 (sezioni 0 e 27 per stato attuale).  
+> **Handoff:** `docs/NEXT_CHAT_START.md` v1.9.  
+> **Collocazione canonica:** `docs/ROADMAP.md` (**non** `ROADMAP.md` in root).
 
 ---
 
-## 1. Regole di uso
+## 1. Regole della roadmap
 
-1. Questa roadmap decide **cosa si può implementare ora**. Una fase non elencata come **ATTIVA** non si implementa.
-2. Le idee nuove vanno nel **Backlog** (§6). Possono interrompere la fase attiva solo bug, regressioni, problemi di sicurezza o dipendenze bloccanti.
-3. Una modifica controllata per volta, preferibilmente un file per task. Niente refactoring estesi.
-4. Prima di modificare un file, leggere la sua versione attuale, `AGENTS.md` e, per Next.js, `node_modules/next/dist/docs/`.
-5. Dopo ogni patch: `npx tsc --noEmit`, test mirati e, dove serve, collaudo nel browser su Windows. Indicare sempre **chi** ha eseguito **quali** test.
-6. Non dedurre la fase corrente dai commit Git: vale questa roadmap.
-7. Aggiornare questo file **solo** quando una fase viene chiusa o approvata dall'utente, nello stesso commit della modifica.
+1. Questa roadmap decide **cosa è autorizzato ora**: eseguire soltanto la fase **▶ ATTIVA**. H1/H2 sono checkpoint brevi di manutenzione **approvati dall'utente**, non permessi generali per nuove feature.
+2. Le idee nuove vanno nel backlog (§6), salvo bug, regressioni, sicurezza o dipendenze bloccanti. Niente refactoring massivo.
+3. Una modifica mirata per task; prima leggere file installati, `AGENTS.md`, le istruzioni di `CLAUDE.md` e, per Next.js, documentazione locale `node_modules/next/dist/docs/`.
+4. Dopo una patch: test effettivi, exit code, report e collaudo sul Windows dell'utente quando serve. **WIN ≠ OFF ≠ UI**.
+5. Non dedurre lo stato dalla cronologia Git. Prima di sovrascrivere file verificare `git status --short` e `git diff`. Non fare commit/push se non richiesti.
+6. Al termine di ogni fase, aggiornare questa roadmap e il checkpoint, idealmente nello stesso commit autorizzato.
+7. Il codice presente nell'ultima versione GitHub potrebbe non corrispondere al workspace locale: la prova finale è sul file realmente installato.
 
-### Legenda
+### Legenda ed evidenza
 
 | Simbolo | Significato |
 |---|---|
-| ✅ | Completata, con prova riportata |
-| ▶ | **Fase attiva**: l'unica autorizzata |
-| ⏳ | Pianificata, non ancora autorizzata |
-| ⏸ | Separata o sospesa |
-| 💡 | Visione futura: **non** è un'autorizzazione a programmarla |
+| ✅ | Chiuso, con prove documentate e/o conferma d'uso |
+| ▶ | Fase **attiva e autorizzata** |
+| ⏳ | Pianificato, non iniziare ora |
+| ⏸ | Separato/sospeso |
+| 💡 | Backlog, non autorizzato |
 
-### Tipi di prova
-
-| Sigla | Significato |
-|---|---|
-| **WIN** | Test o `tsc` eseguiti dall'utente in PowerShell su Windows |
-| **OFF** | Test eseguiti offline dall'assistente (non equivalenti a WIN) |
-| **UI** | Conferma d'uso dell'utente nel browser (non equivale a un test CLI) |
+**WIN** = test eseguito dall'utente in PowerShell su Windows; **OFF** = test eseguito offline dall'assistente; **UI** = conferma dell'utente nel browser. Non sommare prove diverse come se fossero lo stesso run.
 
 ---
 
-## 2. Obiettivo del prodotto (perimetro attuale)
+## 2. Obiettivo di prodotto
 
-App web Destiny 2 collegata all'account Bungie: legge Guardian, equipaggiamento, inventari e Vault, e **ottimizza le build solo con ciò che il giocatore possiede o ha sbloccato**, nella misura in cui i dati sono verificabili.
+App web Destiny 2 collegata all'account Bungie che legge Guardian, inventari e Vault e propone build **basate su ciò che il giocatore possiede o ha sbloccato**, nei limiti dei dati verificati. Tre classi (Titan, Hunter, Warlock); sei sottoclassi (Arc, Solar, Void, Stasis, Strand, Prismatic).
 
-- Classi: Titan, Hunter, Warlock. Sottoclassi: Arc, Solar, Void, Stasis, Strand, Prismatic.
-- L'Optimizer **non scrive mai su Bungie**: solo simulazioni e Builder Preview locale.
-- Un suggerimento AI **non è una build certificata**: i controlli locali deterministici restano obbligatori.
+- L'Optimizer può proporre simulazioni e modificare **solo** la Builder Preview locale, su azione esplicita; non scrive su Bungie.
+- Un suggerimento AI è un'ipotesi non fidata finché i validator locali non la approvano.
+- `unknown` non diventa automaticamente `passed`, `locked` o `0`.
 
 ---
 
-## 3. Fasi completate
+## 3. Fasi completate (non ripetere senza regressioni)
 
-### Fondamenta
-| Fase | Contenuto | Prova |
+### Fondamenta e Manifest
+
+| Fase | Risultato | Evidenza sintetica |
 |---|---|---|
-| ✅ Base app | OAuth Bungie e refresh, API profilo/inventario, Builder, Vault, AppShell | commit `Add Bungie auth and Guardian build UI` |
-| ✅ MF-A / MF-A1a / MF-A1b | Cache versionata del Manifest, cache generica per richiesta, prova del Manifest italiano in sola lettura | registrata nella memoria v1.8 |
+| ✅ Base app | OAuth Bungie e refresh, Guardian, Inventario, Vault, Inspector, trasferimenti espliciti, Builder e AppShell | Conferme UI precedenti; per dettagli vedere memoria |
+| ✅ MF-A / MF-A1a / MF-A1b | Manifest versionato, cache per richiesta, indagine sul Manifest italiano | Memoria v1.9; MF-B1d separato |
 
 ### Armor Engine
-| Fase | Contenuto | Prova |
+
+| Fase | Risultato | Evidenza |
 |---|---|---|
-| ✅ B0.5b2–b6 | Disponibilità delle mod (installate, live, Manifest, bloccate, unknown); integrazione dei PlugSet condivisi | WIN 30/30 (b2); audit reale 4/4 (b3–b6) |
-| ✅ B0.5c1–c3a | Validator di installabilità conservativo | WIN 124/124 + tsc (17/10) |
-| ✅ B0.5c3b–c3e | Evidenze socket/PlugSet; gate prudente sul socket | audit 4/4 (18/10); WIN 65/65 + tsc |
-| ✅ B0.6a1 | `armorCombinationEngine.ts`: ricerca su 5 slot, Min/Max sulle 6 stat Armor 3.0, una esotica, pin, budget | WIN 25/25 + tsc |
-| ✅ B0.6a2 | `armorCombinationUiBridge.ts` + UI “Cerca B0.6 · Min/Max” | WIN 40/40 + tsc; screenshot UI |
-| ✅ B0.6a3 | `armorEquippedSnapshot.ts` + coda manuale (32 dettagli, concorrenza 2) | WIN 56/56 + tsc |
+| ✅ B0.5b2–b6 | Disponibilità mod / PlugSet, audit live conservativo | WIN 30/30 (b2), audit 4/4 (b3–b6) |
+| ✅ B0.5c1–c3a | Validator di installabilità conservativo e consistenza evidenze | WIN 124/124 + tsc (17/10) |
+| ✅ B0.5c3b–c3e | Controlli socket/PlugSet; nessuna falsa installabilità | Audit 4/4 (18/10), WIN 65/65 + tsc |
+| ✅ B0.6a1 | `armorCombinationEngine.ts`, cinque slot, sei Min/Max Armor 3.0, esotiche, pin/budget | WIN 25/25 + tsc |
+| ✅ B0.6a2 | UI bridge e ricerca B0.6 | WIN 40/40 + tsc, screenshot UI |
+| ✅ B0.6a3 | `armorEquippedSnapshot.ts`, equipaggiamento riconciliato e coda dettagli | WIN 56/56 + tsc |
 
-Invarianti: `overallInstallable:false`, `installabilityVerified:false` e `certifiedForOptimization:false` finché non c'è una prova. `armorOptimizer.ts` legacy resta invariato.
+**Invarianti:** `overallInstallable:false`, `installabilityVerified:false`, `certifiedForOptimization:false` in assenza di prove; legacy `armorOptimizer.ts` invariato.
 
-### Sincronizzazione dei dettagli degli oggetti (SQLite)
-| Fase | Contenuto | Prova |
+### SQLite e sincronizzazione
+
+| Fase | Risultato | Evidenza |
 |---|---|---|
-| ✅ SYNC-1 | `itemDetailStore.ts`: `node:sqlite`, separato per account, senza token | WIN 19/19 + tsc |
-| ✅ SYNC-2a | `itemDetailSync.ts`: coda incrementale (concorrenza 2, batch 32) | WIN 38/38 + tsc |
-| ✅ SYNC-2b | Route autenticata, `scope=cached-details` | WIN 66/66 + tsc |
-| ✅ SYNC-2c + hotfix | Caricamento automatico iniziale in Armor v2; fix del falso “sparito/ricomparso” negli snapshot completi | WIN 86/86 + tsc; hotfix OFF 94/94; UI: 457 dalla cache, 0 nuovi, 5/5 equipaggiati |
-| ✅ SYNC-3a | Aggiornamento intelligente (equipaggiati ~6 h, altri ~3 giorni, limite ~30 giorni, max 8 ricontrolli per apertura) | OFF 113/113; UI «funziona» |
-| ✅ SYNC-3b1 | `sharedItemDetailCache.ts`: lettura cache-first condivisa tra Builder, Vault Inspector e Compare Tray | OFF 18/18; UI «funziona tutto» |
+| ✅ SYNC-1 | SQLite `node:sqlite` per account, dettagli privati, senza token | WIN 19/19 + tsc |
+| ✅ SYNC-2a | Coda incrementale, max 2 parallele, batch 32 | WIN 38/38 + tsc |
+| ✅ SYNC-2b | Bridge Bungie autenticato, `scope=cached-details` | WIN 66/66 + tsc |
+| ✅ SYNC-2c + hotfix | Auto-hydration Armor v2, fix falsi oggetti ricomparsi | WIN 86/86 + tsc; OFF 94/94; UI 457 cache/0 nuovi/5 armature |
+| ✅ SYNC-3a | Smart refresh, ricontrolli limitati e scadenze | OFF 113/113, UI «funziona» |
+| ✅ SYNC-3b1 | Lettura cache-first in Builder, Vault, Inspector/Compare | OFF 18/18, UI «funziona tutto» |
 
-Nota: per SYNC-3a e SYNC-3b1 **non c'è ancora un log WIN**. Va eseguito prima di dichiararli coperti da test CLI.
-
----
-
-## 4. ▶ FASE ATTIVA — SYNC-3b2: coordinatore di sincronizzazione a livello app
-
-**Stato:** non implementata.
-
-**Obiettivo:** un unico coordinatore di sync per account, valido per tutta l'app. Passando tra Builder, Vault e Armor Optimizer non deve ripartire un download duplicato. Usa lo snapshot Bungie, SQLite e il confronto per istanza, con concorrenza e budget limitati, avanzamento e annullamento visibili.
-
-**Prima di scrivere codice, leggere le versioni attuali di:**
-1. `src/components/destiny-builder/AppShell.tsx`
-2. `src/app/layout.tsx`
-3. `src/app/guardian/[characterId]/assistant-v2/page.tsx`
-4. `src/lib/destiny-builder/itemDetailClientSync.ts`
-
-Solo se serve: `sharedItemDetailCache.ts`, `itemDetailStore.ts`, `inventory/route.ts`.
-
-**Requisiti:**
-- un solo flusso attivo per account (single-flight); gestione di remount, navigazione e cambio Guardian;
-- avanzamento, stop, budget e rate limit;
-- se la cache fallisce, **niente** ondata di richieste a Bungie;
-- nessun secondo flusso automatico in parallelo alla sync di Armor v2;
-- preservare il comportamento cache-first di SYNC-3b1;
-- nessuna sync globale automatica all'avvio finché l'utente non ha capito i limiti della prima importazione.
-
-**Sequenza:** ispezione in sola lettura → test puri (ciclo di vita, single-flight/abort, privacy) → una patch per volta → `tsc` + suite di regressione → collaudo nel browser su Windows.
-
-**Fuori perimetro in questa fase:** trasferimenti del Vault, persistenza delle bozze e Builder Preview, `armorOptimizer.ts` legacy, installabilità, Manifest, schema del DB.
+**Nota di precisione:** per SYNC-3a e SYNC-3b1 non è stato fornito un nuovo log di tutte le suite WIN. Non inventarlo.
 
 ---
 
-## 5. Fasi successive
+## 4. ▶ FASE ATTIVA — H1: runner di verifica riproducibile (manutenzione autorizzata)
 
-| Ordine | Fase | Stato | Note |
-|---|---|---|---|
-| 1 | **Engine-B0.6a4** — applicare una combinazione Armor alla **sola Builder Preview locale**, su conferma esplicita | ⏳ dopo il collaudo di SYNC-3b2 | Niente equip o trasferimenti Bungie |
-| — | **MF-B1d** — Manifest italiano | ⏸ separata, in attesa | Non mescolarla con le fasi SYNC o Engine |
+**Motivo:** eliminare falsi «PASS» dichiarati dagli agenti locali, rendere riproducibili i controlli su un clone pulito, recuperare un report associato al commit realmente verificato. **Non è una nuova feature Destiny** e non autorizza refactoring in Bungie/Builder/Armor.
 
----
+### ▶ H1-A — `scripts/verify.mjs` (IN VERIFICA, non chiuso)
 
-## 6. Backlog e visione (💡 non autorizzati)
+**Stato osservato (25/10):** il primo script creato da OpenCode/Ollama **non** ha generato `.next/verify-report.txt` dopo l'esecuzione Windows. `node --check` riuscito ≠ verifica funzionale. Il log agente dichiarava 21 suite senza prova. Sul repository remoto il file `scripts/verify.mjs` è ancora un prologo incompleto. È stata consegnata una **patch hotfix singolo-file**, riferita come testata in 4 scenari simulati offline; **manca conferma Windows**.
 
-- Verifica completa dell'installabilità di 5 armature (energia/costi, tier/masterwork, sblocchi, proprietà effettiva).
-- Acquisition Planner, progressione del Potere, lore.
-- Portale/enciclopedia Destiny per nuovi giocatori. Prima di integrare dati di terze parti, valutare termini d'uso, licenze e qualità delle fonti.
+**Scope consentito ora:** solo `scripts/verify.mjs`. Le modifiche precedenti a `package.json`/`package-lock.json` per `tsx` sono già presenti nel remoto; `tsx` è `4.23.15` devDependency esatta. Non installare altre dipendenze.
 
----
+**Criteri di uscita:**
 
-## 7. Divieti sempre validi
-
-- Nessuna scrittura Bungie (equip/transfer) dall'Optimizer.
-- Nessuna chiamata OpenAI a pagamento senza approvazione.
-- Nessuna nuova dipendenza npm senza approvazione.
-- Nessun token, account ID, Guardian ID o itemInstanceId in log, report, export o contesto AI.
-- `unknown` non diventa `passed`, `0` o `locked`.
-- Un dato in cache non è una verifica live di Bungie.
-- Non modificare l'autenticazione Bungie senza approvazione.
-
----
-
-## 8. Suite di regressione
+1. `node --check scripts/verify.mjs` exit 0.
+2. `node scripts/verify.mjs` effettua `next typegen`, `tsc --noEmit`, scopre **dinamicamente** le 18 suite `test-*.ts` della root e le esegue usando `tsx` locale; nessuna lista fissa.
+3. Usa gli **exit code veri**, senza inferire PASS dal testo. Fermo al primo errore/timeout. Non inventa il numero di assert nelle suite prive di verifica esplicita.
+4. Scrive `.next/verify-report.txt` **sia su PASS sia su FAIL**, con data UTC, Node, commit Git, singoli esiti; niente token/account ID/log privati.
+5. Il report è stato **eseguito e letto su Windows dall'utente**; condivisione dei risultati e `git status --short` prima di dire H1-A chiuso.
 
 ```powershell
-npx tsc --noEmit
-npx tsx test-shared-item-detail-cache.ts
-npx tsx test-item-detail-smart-refresh.ts
-npx tsx test-item-detail-full-snapshot-regression.ts
-npx tsx test-item-detail-client-sync.ts
-npx tsx test-item-detail-profile-bridge.ts
-npx tsx test-item-detail-sync.ts
-npx tsx test-item-detail-store.ts
-npx tsx test-armor-combination-engine.ts
-npx tsx test-armor-combination-ui-bridge.ts
-npx tsx test-armor-equipped-snapshot.ts
-npx tsx test-armor-installability-validator.ts
+node --check .\scripts\verify.mjs
+node .\scripts\verify.mjs
+Write-Host 'Exit code:' $LASTEXITCODE
+Get-Content .\.next\verify-report.txt
+git status --short
 ```
 
-Dichiarare superati solo i test effettivamente eseguiti, indicando chi li ha eseguiti e quando.
+### ⏳ H1-B — comando npm e report checkpoint
+
+**Non partire prima di H1-A:** aggiungere a `package.json` lo script `"verify": "node scripts/verify.mjs"` senza altre modifiche, confermare `npm run verify` ed eventuali modifiche strettamente necessarie al lockfile; conservare report ed esaminare Git diff, creare tag/commit solo se autorizzati. Non migrare ancora i test dalla root.
+
+---
+
+## 5. Sequenza successiva, non autorizzata finché H1-A non è chiuso
+
+| Ordine | Fase | Stato e uscita |
+|---|---|---|
+| 1 | **H1-B** — attivare `npm run verify` | ⏳ Dopo H1-A; report ed exit code verificati |
+| 2 | **H2** — documentazione chiara e corta | ⏳ `STATE.md` (1 pagina), `DECISIONS.md` append-only, `CHANGELOG.md` archivio; mantenere fonti e storia, non cancellare il documento lungo finché non verificato |
+| 3 | **SYNC-3b2** — coordinatore unico per account | ⏳ Single-flight tra Builder/Vault/Armor, un solo worker, guard di identità e remount Strict Mode, stop/abort/progress, no richieste doppie o download massivi se SQLite fallisce |
+| 4 | **Engine-B0.6a4** — applicazione combinazione Armor | ⏳ Solo Builder Preview locale dopo conferma; niente equip/transfer Bungie |
+| — | **MF-B1d** — Manifest italiano | ⏸ Separato, non sovrapporlo alla sync |
+
+**SYNC-3b2, quando autorizzata:** prima leggere `AppShell.tsx`, `src/app/layout.tsx`, `assistant-v2/page.tsx`, `itemDetailClientSync.ts` (e solo i moduli vicini necessari). Criteri osservabili da formalizzare nei test: Builder→Vault→Armor non ripete `GetItem` per un dettaglio valido; Strict Mode/remount non crea worker paralleli; un cambio account non idrata stato altrui; cambio Guardian non introduce risultati obsoleti; stop e limiti di rete rispettati. Nessun secondo flusso automatico parallelo ad Armor v2. Nessuna sync globale massiva non approvata.
+
+---
+
+## 6. Backlog 💡 (non autorizzato)
+
+- Certificazione installabilità Armor 3.0 completa, con evidenza energia/costi/tier/masterwork/slot/sblocchi.
+- Migrazione graduale dei test a `tests/` e valutazione `node --test` dopo H1, solo con dimostrata compatibilità.
+- Estrarre logica pura dai grandi file React/route **solo** quando una modifica utile lo richiede; niente big-bang.
+- Fixture anonime per audit reali, backup SQLite ricostruibile (con privacy), eventuale CI GitHub.
+- Acquisition Planner, progressione Potere, lore e portale enciclopedico. Controllare licenze/termini prima di integrare contenuti terzi.
+- Pulizia frammento accidentale di istruzioni in `CLAUDE.md`, come modifica separata.
+
+---
+
+## 7. Sicurezza e privacy non negoziabili
+
+- Nessuna scrittura Bungie (equip/transfer/socket) dall'Optimizer; i trasferimenti Vault sono un flusso separato e intenzionale.
+- Nessuna chiamata OpenAI a pagamento senza approvazione; Ollama/OpenCode serve per il **coding locale**, non implica AI in-app.
+- Nessuna nuova dipendenza npm senza approvazione; `tsx` già dichiarata.
+- Nessun token, OAuth, ID account/Guardian/itemInstanceId, `.env` o database privati in log, report, export o contesto AI.
+- Cache SQLite privata separata dal Manifest; dato cached ≠ Bungie live.
+- `unknown` resta `unknown`; non certificare configurazioni con dati insufficienti.
+- Niente operazioni Git distruttive, push o commit automatici; controllare diff e backup.
+
+---
+
+## 8. Regressioni disponibili e verifica H1
+
+La verifica corrente è ancora manuale finché H1-A/H1-B non superano il collaudo Windows:
+
+```powershell
+npx --no-install next typegen
+npx --no-install tsc --noEmit
+npx --no-install tsx test-shared-item-detail-cache.ts
+npx --no-install tsx test-item-detail-smart-refresh.ts
+npx --no-install tsx test-item-detail-full-snapshot-regression.ts
+npx --no-install tsx test-item-detail-client-sync.ts
+npx --no-install tsx test-item-detail-profile-bridge.ts
+npx --no-install tsx test-item-detail-sync.ts
+npx --no-install tsx test-item-detail-store.ts
+npx --no-install tsx test-armor-combination-engine.ts
+npx --no-install tsx test-armor-combination-ui-bridge.ts
+npx --no-install tsx test-armor-equipped-snapshot.ts
+npx --no-install tsx test-armor-installability-validator.ts
+```
+
+Dopo H1-B, il comando canonico sarà `npm run verify` e dovrà scrivere un report reale; **non affermare che sia già disponibile**. Per un log affidabile salvare commit esatto, versione Node, output e exit code; una suite con exit 0 ma senza assert non ha un numero PASS verificato.

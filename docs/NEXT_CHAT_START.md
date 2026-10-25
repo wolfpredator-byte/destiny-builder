@@ -1,68 +1,56 @@
 # DESTINY BUILDER — AVVIO RAPIDO NUOVA CHAT
 
-**Snapshot:** 20 ottobre 2026 · Handoff **v1.8** · checkpoint **dopo SYNC-3b1**  
-**Documento completo:** `docs/DESTINY_BUILDER_PROJECT_MEMORY.md` (v1.8, **sezioni 0 e 23–26** prevalenti per stato operativo).  
-**Perimetro:** Destiny Builder, **non** Jarvis/Ghost. **La `ROADMAP.md` effettiva del repository resta fonte di verità**; non è stata allegata a questo checkpoint.
+**Versione:** 1.9 · **25 ottobre 2026** · ultimo checkpoint funzionale confermato: **SYNC-3b1**.  
+**Task corrente:** **H1-A, verifica runner** (non chiuso).  
+**Fonte di verità:** [`docs/ROADMAP.md`](ROADMAP.md) (fase ▶).  
+**Memoria dettagliata e storico:** [`docs/DESTINY_BUILDER_PROJECT_MEMORY.md`](DESTINY_BUILDER_PROJECT_MEMORY.md), leggere sezione 0 e 27; le vecchie istruzioni sono storiche.
 
-## Messaggio pronto da incollare in una nuova chat
+## Messaggio pronto da incollare nella nuova chat
 
-> Continuiamo **Destiny Builder** (Windows 11, Next.js 16.3.8 / React 19 / TypeScript, Node 24; `C:\Projects\DestinyBuilder\destiny-builder`). Ho allegato entrambi i file handoff **v1.8, 20/10/2026**. Leggi la **sezione 0 e le sezioni 23–26** del documento lungo, poi `AGENTS.md`, eventuale roadmap canonica e sorgenti realmente installati. **Non ricominciare dal vecchio B0.5c3b:** Engine B0.6a1/a2/a3 e SYNC-1→3b1 sono già stati sviluppati e testati, con conferme utente. **Ultimo checkpoint: SYNC-3b1 — lettura condivisa SQLite cache-first fra Builder, Vault/Inspector/Compare Tray — utente ha confermato «funziona tutto».** PROSSIMO: **SYNC-3b2, coordinatore automatico unico a livello app**, **non ancora implementato**. Prima di preparare patch chiedi/leggi le versioni correnti di `AppShell.tsx`, `src/app/layout.tsx`, `assistant-v2/page.tsx`, `itemDetailClientSync.ts`. Evita di ricaricare dettagli al cambio pagina; mantieni cache persistente, privacy, status e avanzamento, stop e limiti di richieste. Una patch mirata/file alla volta, test locali e collaudo Windows; **non** modificare transfer Vault, Builder Preview, legacy `armorOptimizer.ts` o installabilità, né eseguire scritture Bungie/chiamate OpenAI a pagamento. Dopo SYNC-3b2 si torna a **Engine-B0.6a4 — Apply to Builder Preview locale su conferma**. Parla in italiano, sintetico e concreto.
+> Continuiamo **Destiny Builder**, app locale Next.js 16.3.8/React 19/TypeScript, Windows 11 Node 24, repo pubblico `wolfpredator-byte/destiny-builder`, `C:\Projects\DestinyBuilder\destiny-builder`. **Non ricominciare:** SYNC-3b1 è l'ultimo checkpoint funzionale confermato dall'utente (Builder/Vault/Inspector condividono dettagli SQLite); Engine-B0.6a1/a2/a3 e SYNC-1→3b1 sono già implementati con i limiti dichiarati. **Leggi prima `docs/ROADMAP.md` (fase ▶), `AGENTS.md`, sezione 0 e 27 di `docs/DESTINY_BUILDER_PROJECT_MEMORY.md` e i file reali correnti.** Il task immediato è **H1-A**: correggere e collaudare su Windows `scripts/verify.mjs`, che deve generare `.next/verify-report.txt` anche su fallimento. Un primo tentativo di OpenCode/Ollama era difettoso, la patch corretta è stata preparata ma **non abbiamo ancora il collaudo Windows**. Su GitHub il runner è solo uno stub. Dopo H1-A: H1-B `npm run verify`, poi H2 documentazione, quindi **SYNC-3b2** (single-flight app, non implementata) e **B0.6a4** (applica Armor alla sola Builder Preview). Non scrivere a Bungie dall'Optimizer, non avviare chiamate OpenAI a pagamento, non inventare test PASS o certificazioni. Lavora a patch piccole, rispetta `AGENTS.md` e i doc Next locali, spiega il codice in italiano e riporta evidenza di test reale.
 
-## Stato confermato e cosa NON è più da fare
+## Stato del progetto
 
-| Checkpoint | Stato / prova riportata |
-|---|---|
-| B0.5c3e — Validator installabilità conservativa | **65/65 test PASS Windows** + TypeScript; `overallInstallable:false`, `certifiedForOptimization:false` |
-| B0.6a1 — Combination Engine | **25/25 PASS Windows**; 5 slot, sei Min/Max reali, dati riconciliati, budget |
-| B0.6a2 — UI Bridge | **15/15 PASS Windows** (+25 Engine = 40), risultati verificati in screenshot; legacy separato |
-| B0.6a3 — Equipped Snapshot + batch manuali | **16/16 PASS Windows** (+15+25 = 56), 5 slot riconciliabili, progress/abort |
-| SYNC-1 — `node:sqlite` persistente per account | **19/19 PASS Windows**; rollback, re-open, invalidazione e privacy |
-| SYNC-2a — Coda incrementale | **19/19 PASS Windows**; 2 richieste concurrent, batch 32 |
-| SYNC-2b — Route autenticata + cache read | **28/28 PASS Windows**; totale 66/66 SYNC e TypeScript PASS |
-| SYNC-2c — Auto-hydration Armor v2 | **20/20 PASS Windows**; totale 86/86 SYNC e TypeScript PASS |
-| SYNC-2c Hotfix — invalidazione falso snapshot | **8/8 regressioni e 94/94 totali offline**; in browser utente cache **457**, nuovi **0**, rimanenti **0**, armature equipaggiate **5/5** |
-| SYNC-3a — Smart refresh | **19/19 e 113/113 totali offline**, utente: «funziona»; non presente log Windows test/tsc aggiornato in chat |
-| **SYNC-3b1 — Shared cache-first Builder/Vault** | **18/18 offline** per adattatore, TSX parsing; utente: **«funziona tutto»**; non presente log CLI Windows aggiornato |
+| Area | Stato | Cosa significa |
+|---|---|---|
+| Base Bungie: OAuth, Guardian, Vault, trasferimenti separati | ✅ | Funzionante nelle verifiche utente precedenti |
+| Build Assistant/Builder Preview e sottoclassi | ✅ / parziale | Preview e funzioni esistenti, non build AI pienamente certificata |
+| Armor B0.6a1–a3 | ✅ | Ricerca combinazioni 5 pezzi con sei stat; niente certificazione dell'installabilità finale |
+| SYNC-1 → SYNC-3a | ✅ | SQLite, snapshot protetti, cache persistente, smart refresh; osservata UI con 457 dettagli riutilizzati |
+| SYNC-3b1 | ✅ | Cache-first condivisa in Builder, Vault, Inspector/Compare; «funziona tutto» utente; 18/18 controlli riferiti offline, **nessun nuovo log WIN** |
+| **H1-A** | ▶ In verifica | Primo runner Ollama difettoso; report assente. Correzione preparata, Windows non ancora eseguito |
+| H1-B | ⏳ | Comando npm `verify`, report e verifica commit |
+| H2 | ⏳ | `STATE.md`, `DECISIONS.md`, `CHANGELOG.md`, storia conservata |
+| SYNC-3b2 | ⏳ | Single-flight globale per account, progress/stop, Strict Mode, nessun duplicate worker |
+| Engine-B0.6a4 | ⏳ | Applicazione solo a Builder Preview su conferma esplicita |
+| MF-B1d | ⏸ | Manifest italiano, separato dalla sync |
 
-**Avvertenza sulle prove:** i test offline dell'assistente e quelli realmente incollati dall'utente da PowerShell non sono equivalenti. La conferma «funziona tutto» è prova d'uso browser, **non** la trascrizione di un `tsc`/test CLI. Non sommare suite eseguite in momenti diversi come una singola run.
+## Repository/ambiente — verificato su GitHub al 25 ottobre
 
-## Architettura che NON va rifatta
+- **Repo pubblico**, branch `master`, commit osservato `95352c4bb5` («Cambiamenti roadmap e configurazione opencode»); non dedurre lo stato locale dal remoto.
+- Roadmap **esiste in `docs/ROADMAP.md`**, NON in root; `CLAUDE.md` la richiama.
+- `package.json`: Next `16.3.8`, React `19.2.8`, `tsx` già installata come devDependency con versione **`4.23.15`**. **Manca ancora `npm run verify`**.
+- `opencode.json` ora usa `ollama/qwen3.5:4b`. Ollama/OpenCode è **strumento locale di sviluppo**, non AI automaticamente integrata nell'app.
+- `scripts/verify.mjs` remoto al commit osservato è solo un prologo/import. Il nuovo hotfix H1-A fornito in ZIP è **da applicare e collaudare**. Una precedente risposta OpenCode indicava 21 suite, ma le 18 suite `test-*.ts` della root non erano state effettivamente eseguite/provate da quel runner. Esiti dell'agente non sono prove.
+- `CLAUDE.md` contiene un frammento accidentale `~~~` di istruzioni su come salvare la roadmap; pulizia **separata**, non inclusa in H1-A.
+- Il precedente `git status` con file modificati/eliminati risale a prima dell'ultimo commit; ricontrollare sempre `git status --short` prima di applicare patch e non ripristinare file senza approvazione.
 
-- Manifest statico Bungie: cache versionata in `src/lib/bungie/manifest.ts`; il catalogo italiano/MF-B1d è una pista separata, non la cache degli oggetti posseduti.
-- Dettagli privati degli item: SQLite `src/lib/destiny-builder/itemDetailStore.ts` (fuori da `public`, per account), sincronizzazione `itemDetailSync.ts`, `itemDetailClientSync.ts`, `itemDetailProfileBridge.ts`.
-- `src/app/api/destiny/characters/[characterId]/inventory/route.ts`: `scope=core`, `scope=account`, `scope=detail`, `scope=cached-details` (batch autenticato). Solo dati server verificati autorizzano la scrittura su SQLite; no token salvati.
-- `src/lib/destiny-builder/sharedItemDetailCache.ts`: dal 3b1 leggere in cache prima di chiamare Bungie per Builder `ensureItemDetail`, Vault Inspector e Compare Tray, con identità istanza/hash rigorosa. `scope=cached-details` è **cache**, non verifica live.
-- Armor v2 `/guardian/[characterId]/assistant-v2`: B0.6 produce combinazioni **read-only** basate sui dettagli riconciliati; non equipaggia né trasferisce. `armorOptimizer.ts` legacy non modificato. `certifiedForOptimization:false` per vincoli non verificati.
-- Politica SYNC-3a: nuovi item a priorità elevata; ricontrollo indicativo equipaggiati ~6 ore, altri ~3 giorni, limite di utilizzo ~30 giorni; max 8 ricontrolli periodici all'apertura, concorrenza 2. Il fingerprint non prova ogni possibile modifica del gioco.
+## Passo immediato per riprendere H1-A
 
-## Prossima azione: SYNC-3b2 (NON IMPLEMENTATO)
-
-**Richiedere/verificare le versioni *attuali* di:**
-
-1. `src/components/destiny-builder/AppShell.tsx`
-2. `src/app/layout.tsx`
-3. `src/app/guardian/[characterId]/assistant-v2/page.tsx`
-4. `src/lib/destiny-builder/itemDetailClientSync.ts`
-
-Prima: confrontare con `AGENTS.md` (Next.js 16 breaking changes: leggere `node_modules/next/dist/docs/`), `ROADMAP.md` se esiste, e con `sharedItemDetailCache.ts` se necessario. **Non progettare un provider globale a memoria senza verificare i componenti di layout e i confini di autenticazione**. Prevedere single-flight per account, remount/navigazione, cambio Guardian, progress, abort, budget/rate limit e fallimento cache senza fetch storm. Nessuna automazione doppia insieme alla sync Armor v2.
-
-**Test utili per regressioni** (eseguirli nel repo, non dichiararli passati in anticipo):
+Usare la patch **`DestinyBuilder_H1_A_Verify_Runner_Fix.zip`** già consegnata, se non installata. Confrontare il file attuale, salvare una copia, sostituire **solo** `scripts/verify.mjs` e controllare in PowerShell:
 
 ```powershell
-npx tsc --noEmit
-npx tsx test-shared-item-detail-cache.ts
-npx tsx test-item-detail-smart-refresh.ts
-npx tsx test-item-detail-full-snapshot-regression.ts
-npx tsx test-item-detail-client-sync.ts
-npx tsx test-item-detail-profile-bridge.ts
-npx tsx test-item-detail-sync.ts
-npx tsx test-item-detail-store.ts
-npx tsx test-armor-combination-engine.ts
-npx tsx test-armor-combination-ui-bridge.ts
-npx tsx test-armor-equipped-snapshot.ts
-npx tsx test-armor-installability-validator.ts
+node --check .\scripts\verify.mjs
+node .\scripts\verify.mjs
+Write-Host 'Exit code:' $LASTEXITCODE
+Get-Content .\.next\verify-report.txt
+git status --short
 ```
 
-**Dopo SYNC-3b2:** `Engine-B0.6a4` per applicare una combinazione **solo alla Builder Preview locale con consenso esplicito**, lasciando la possibilità di trasferimento/equip reale nei suoi flussi separati e non automatici. `MF-B1d` resta sospesa, non introdurre lore/acquisition/power nelle fasi in corso.
+Criteri H1-A: individuare dinamicamente **18** suite nella root, eseguire `next typegen`, `tsc --noEmit` e tutte le suite con exit code reali, non falsificare conteggi; scrivere report UTC/Node/commit/risultati anche in caso di fallimento; niente dati personali. **Non dichiarare H1-A completato prima di vedere output Windows e report.** Solo allora H1-B aggiunge `npm run verify`.
 
-**Come conservare questo checkpoint:** copia **entrambi i file** in `C:\Projects\DestinyBuilder\destiny-builder\docs\`, dopo aver confrontato/backup eventuali versioni esistenti. Sono file scaricati dalla chat: **non modificano automaticamente il repository, la roadmap, Git o il database SQLite**. Non allegare `.env.local`, token, account ID, Guardian ID o itemInstanceId.
+## Limiti e salvaguardie
+
+`docs/ROADMAP.md` autorizza la sequenza. Niente nuove feature fuori fase; nuovi spunti al backlog. Non alterare trasferimenti del Vault, autenticazione Bungie, `armorOptimizer.ts` legacy, SQLite o Builder Preview per fare H1. Non affermare installabilità quando `certifiedForOptimization:false`; `unknown` resta `unknown`. Separare static Manifest, live Bungie, cache privata. Evitare log con token, ID Bungie/itemInstanceId; nessun upload di `.env*` o SQLite. Prima di patch Next.js leggere la guida locale `node_modules/next/dist/docs/`. Mantenere commenti didattici in italiano. Non usare commit/restore/reset Git distruttivi senza autorizzazione.
+
+**Questi file scaricabili sono copie di checkpoint:** non modificano automaticamente Windows/GitHub. Applicarli in `docs/`, controllando `git diff` prima di committare. Per un nuovo lavoro partire dalla roadmap e dai file correnti.
