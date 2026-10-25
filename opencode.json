@@ -1,0 +1,61 @@
+
+{
+  "$schema": "https://opencode.ai/config.json",
+
+  "model": "ollama/granite3.3:8b",
+  "update": "disable",
+
+  "instructions": [
+    "CLAUDE.md"
+  ],
+
+  "permissions": [
+    {
+      "action": "read",
+      "resource": "*",
+      "effect": "allow"
+    },
+    {
+      "action": "read",
+      "resource": "*.env*",
+      "effect": "deny"
+    },
+    {
+      "action": "edit",
+      "resource": "*",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "*",
+      "effect": "ask"
+    },
+    {
+      "action": "external_directory",
+      "resource": "*",
+      "effect": "ask"
+    }
+  ],
+
+  "agents": {
+    "plan": {
+      "permissions": [
+        {
+          "action": "edit",
+          "resource": "*",
+          "effect": "deny"
+        },
+        {
+          "action": "shell",
+          "resource": "*",
+          "effect": "deny"
+        },
+        {
+          "action": "external_directory",
+          "resource": "*",
+          "effect": "deny"
+        }
+      ]
+    }
+  }
+}
